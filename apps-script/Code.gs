@@ -16,9 +16,10 @@
 
 // ===================== CONFIG (ISI DI SINI) =====================
 const CONFIG = {
-  EXELY_CLIENT_ID: "",
-  EXELY_CLIENT_SECRET: "",
-  EXELY_PROPERTY_ID: "",
+  // Dicipta di Exely extranet: Property settings > API connections
+  EXELY_CLIENT_ID: "api_connection_04e9c_51649927b1",
+  EXELY_CLIENT_SECRET: "8fZJL8Lajot2RWW3fzlWGIMKaLsiAOnd",
+  EXELY_PROPERTY_ID: "503620", // WARISAN HOTEL
   // Masa semakan harian (24 jam, waktu Malaysia)
   DAILY_CHECK_HOUR: 23,
   DAILY_CHECK_MINUTE: 30,
@@ -107,25 +108,121 @@ function exelyToken() {
   return json.access_token;
 }
 
-// Tarik booking yang check-out hari ini
+// Tarik booking yang check-out hari ini.
+// Pulangkan array: { roomNumber, roomTypeName, guestName, bookingNumber }
+//
+// Dua peringkat:
+// 1) PMS API (utama) — ada nombor bilik fizikal (roomId -> displayName).
+//    PERINGATAN: perlu diaktifkan oleh Exely support ("Access to Exely PMS External API").
+// 2) Read Reservation API (sandaran) — tiada nombor bilik, hanya jenis bilik.
+//    Bilik hanya diisi jika TEPAT SATU bilik padan dengan jenis bilik itu.
 function fetchTodayCheckouts() {
   if (!CONFIG.EXELY_CLIENT_ID) return [];
+  const token = exelyToken();
+  const today = todayMY();
+
+  // ---- Peringkat 1: PMS API ----
   try {
-    const token = exelyToken();
-    const today = todayMY();
-    // Read Reservation API — tapis ikut tarikh check-out
-    const url = "https://connect.hopenapi.com/api/reservation/v1/bookings?propertyId=" +
-      CONFIG.EXELY_PROPERTY_ID + "&checkOutFrom=" + today + "&checkOutTo=" + today;
-    const res = UrlFetchApp.fetch(url, {
+    const pms = fetchCheckoutsViaPmsApi_(token, today);
+    if (pms !== null) return pms; // berjaya (mungkin array kosong)
+  } catch (e) {
+    console.warn("PMS API gagal (mungkin belum diaktifkan Exely): " + e);
+  }
+
+  // ---- Peringkat 2: Read Reservation API (sandaran) ----
+  try {
+    return fetchCheckoutsViaReadApi_(token, today);
+  } catch (e) {
+    console.error("Read Reservation API gagal:", e);
+    return [];
+  }
+}
+
+// PMS API: cari tempahan aktif yang menjejaskan hari ini, tapis checkOutDateTime == hari ini.
+// Pulang null jika API gagal (supaya sandaran digunakan).
+function fetchCheckoutsViaPmsApi_(token, today) {
+  const base = "https://connect.hopenapi.com/api/pms/v2/properties/" + CONFIG.EXELY_PROPERTY_ID;
+
+  // Peta roomId -> displayName (nombor bilik)
+  const roomsRes = UrlFetchApp.fetch(base + "/rooms?maxPageSize=100", {
+    headers: { Authorization: "Bearer " + token },
+    muteHttpExceptions: true,
+  });
+  if (roomsRes.getResponseCode() !== 200) {
+    console.warn("PMS /rooms status " + roomsRes.getResponseCode());
+    return null;
+  }
+  const roomsJson = JSON.parse(roomsRes.getContentText());
+  const roomNameById = {};
+  (roomsJson.rooms || []).forEach((r) => (roomNameById[r.id] = r.displayName));
+
+  // Cari tempahan yang stay-nya menyentuh hari ini
+  const url = base + "/reservations/search?state=Active" +
+    "&startAffectPeriodDateTime=" + today + "T00:00" +
+    "&endAffectPeriodDateTime=" + today + "T23:59" +
+    "&maxPageSize=100";
+  const res = UrlFetchApp.fetch(url, {
+    headers: { Authorization: "Bearer " + token },
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) {
+    console.warn("PMS reservations/search status " + res.getResponseCode());
+    return null;
+  }
+  const json = JSON.parse(res.getContentText());
+  const out = [];
+  (json.reservations || []).forEach((rv) => {
+    const guestName = rv.customer ? String(rv.customer).trim() : "";
+    (rv.roomStays || []).forEach((rs) => {
+      const co = String(rs.actualCheckOutDateTime || rs.checkOutDateTime || "");
+      if (co.slice(0, 10) !== today) return;
+      const roomNumber = roomNameById[rs.roomId] || "";
+      out.push({
+        roomNumber: roomNumber,
+        roomTypeName: "",
+        guestName: guestName,
+        bookingNumber: rv.number || "",
+      });
+    });
+  });
+  return out;
+}
+
+// Read Reservation API (sandaran): tiada nombor bilik — hanya jenis bilik.
+function fetchCheckoutsViaReadApi_(token, today) {
+  const base = "https://connect.hopenapi.com/api/read-reservation/v1/properties/" + CONFIG.EXELY_PROPERTY_ID;
+  const since = Utilities.formatDate(new Date(Date.now() - 48 * 3600 * 1000), "UTC", "yyyy-MM-dd'T'HH:mm:ss'Z'");
+  const listRes = UrlFetchApp.fetch(base + "/bookings?lastModification=" + encodeURIComponent(since), {
+    headers: { Authorization: "Bearer " + token },
+    muteHttpExceptions: true,
+  });
+  if (listRes.getResponseCode() !== 200) {
+    throw new Error("Read API list status " + listRes.getResponseCode());
+  }
+  const list = JSON.parse(listRes.getContentText());
+  const summaries = (list.bookingSummaries || []).filter((b) => b.status !== "Cancelled");
+  const out = [];
+  summaries.slice(0, 50).forEach((b) => {
+    const detRes = UrlFetchApp.fetch(base + "/bookings/" + encodeURIComponent(b.number), {
       headers: { Authorization: "Bearer " + token },
       muteHttpExceptions: true,
     });
-    const json = JSON.parse(res.getContentText());
-    return json.bookings || json.data || [];
-  } catch (e) {
-    console.error("Exely fetch gagal:", e);
-    return [];
-  }
+    if (detRes.getResponseCode() !== 200) return;
+    const det = JSON.parse(detRes.getContentText());
+    const booking = det.booking || det;
+    (booking.roomStays || []).forEach((rs) => {
+      const co = String((rs.stayDates && rs.stayDates.departureDateTime) || "");
+      if (co.slice(0, 10) !== today) return;
+      const guest = (rs.guests && rs.guests[0]) || {};
+      out.push({
+        roomNumber: "", // tiada dalam API ini
+        roomTypeName: (rs.roomType && rs.roomType.name) || "",
+        guestName: (guest.firstName + " " + (guest.lastName || "")).trim(),
+        bookingNumber: booking.number || b.number,
+      });
+    });
+  });
+  return out;
 }
 
 // ===================== SYNC CHECKOUT -> HOUSEKEEPING =====================
@@ -142,9 +239,17 @@ function syncExelyCheckouts() {
   const today = todayMY();
 
   checkouts.forEach((booking) => {
-    // Sesuaikan dengan struktur sebenar respons Exely
-    const roomNumber = String(booking.roomNumber || booking.room || "");
-    const room = rooms.find((r) => String(r.room_number) === roomNumber);
+    let room = null;
+
+    if (booking.roomNumber) {
+      // PMS API: nombor bilik terus
+      room = rooms.find((r) => String(r.room_number) === String(booking.roomNumber));
+    } else if (booking.roomTypeName) {
+      // Sandaran: padan ikut jenis bilik — hanya jika TEPAT SATU bilik jenis itu
+      const matches = rooms.filter((r) => String(r.room_type || "").toLowerCase() === String(booking.roomTypeName).toLowerCase());
+      if (matches.length === 1) room = matches[0];
+      else console.warn("Langkau booking " + booking.bookingNumber + ": jenis bilik '" + booking.roomTypeName + "' padan " + matches.length + " bilik");
+    }
     if (!room) return;
 
     // Elak pendua
@@ -192,7 +297,7 @@ function syncExelyCheckouts() {
         is_lnb: "true",
         cleaning_status: "pending_clean",
         sellable: "true",
-        notes: "Check-out dari Exely",
+        notes: "Check-out Exely" + (booking.guestName ? " - " + booking.guestName : "") + (booking.bookingNumber ? " (#" + booking.bookingNumber + ")" : ""),
         updated_at: nowISO(),
       });
     }
@@ -313,4 +418,37 @@ function testDailyCheck() {
 function testSync() {
   syncExelyCheckouts();
   SpreadsheetApp.getUi().alert("Sync selesai. Semak tab HousekeepingTasks.");
+}
+
+// Uji sambungan Exely — buka View > Logs selepas run untuk tengok hasil
+function testExely() {
+  try {
+    const token = exelyToken();
+    console.log("Token OK: " + token.slice(0, 20) + "...");
+
+    // Uji PMS API
+    const base = "https://connect.hopenapi.com/api/pms/v2/properties/" + CONFIG.EXELY_PROPERTY_ID;
+    const roomsRes = UrlFetchApp.fetch(base + "/rooms?maxPageSize=100", {
+      headers: { Authorization: "Bearer " + token },
+      muteHttpExceptions: true,
+    });
+    console.log("PMS /rooms status: " + roomsRes.getResponseCode());
+    console.log("PMS /rooms body (500 aksara pertama): " + roomsRes.getContentText().slice(0, 500));
+
+    // Uji Read Reservation API
+    const readBase = "https://connect.hopenapi.com/api/read-reservation/v1/properties/" + CONFIG.EXELY_PROPERTY_ID;
+    const since = Utilities.formatDate(new Date(Date.now() - 48 * 3600 * 1000), "UTC", "yyyy-MM-dd'T'HH:mm:ss'Z'");
+    const listRes = UrlFetchApp.fetch(readBase + "/bookings?lastModification=" + encodeURIComponent(since), {
+      headers: { Authorization: "Bearer " + token },
+      muteHttpExceptions: true,
+    });
+    console.log("Read API /bookings status: " + listRes.getResponseCode());
+    console.log("Read API /bookings body (500 aksara pertama): " + listRes.getContentText().slice(0, 500));
+
+    // Uji fetch penuh
+    const checkouts = fetchTodayCheckouts();
+    console.log("Check-out hari ini: " + JSON.stringify(checkouts));
+  } catch (e) {
+    console.error("testExely gagal: " + e);
+  }
 }
