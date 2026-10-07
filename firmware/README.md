@@ -7,6 +7,148 @@ Dua peranti ESP32. Kod sedia ada dalam folder masing-masing:
 
 ---
 
+# PANDUAN WIRING LENGKAP
+
+## A. PERANTI STOR
+
+### A1. RFID RC522 → ESP32
+
+> ⚠️ **PENTING: RC522 guna 3.3V SAHAJA. Sambung ke 5V akan rosakkan modul!**
+
+| Pin RC522 | Sambung ke | Nota |
+|---|---|---|
+| VCC | **3.3V** ESP32 | JANGAN 5V! |
+| GND | GND | |
+| SDA (SS) | GPIO 5 | |
+| SCK | GPIO 18 | |
+| MOSI | GPIO 23 | |
+| MISO | GPIO 19 | |
+| RST | GPIO 33 | |
+| IRQ | *(tidak perlu sambung)* | |
+
+### A2. LCD 1602 + I2C backpack → ESP32
+
+| Pin LCD | Sambung ke |
+|---|---|
+| VCC | 5V (pin VIN ESP32) |
+| GND | GND |
+| SDA | GPIO 21 |
+| SCL | GPIO 22 |
+
+### A3. Modul Relay 1-channel → ESP32 + Maglock 12V
+
+> Bahagian ini paling kritikal. Maglock perlukan **bekalan kuasa 12V berasingan**
+> (adapter 12V 2A) — ESP32 hanya menghidupkan relay.
+
+**Sisi ESP32 (isyarat):**
+
+| Pin Relay | Sambung ke |
+|---|---|
+| VCC | 5V (VIN) |
+| GND | GND |
+| IN | GPIO 26 |
+
+**Sisi kuasa (maglock) — wiring FAIL-SAFE:**
+
+```
+Adapter 12V (+) ──► COM relay
+NC relay        ──► Maglock (+)     [guna NC = Normally Closed]
+Adapter 12V (−) ──► Maglock (−)
+Adapter 12V (−) ──► GND ESP32       [GND MESTI dikongsi/common ground]
+```
+
+Dengan wiring NC: bila ESP32 mati/elektrik putus → relay terbuka → maglock
+terbuka (pintu tidak terkunci semasa blackout). Ini yang dimahukan.
+
+> Kalau modul relay ada jumper **JD-VCC**, kekalkan jumper terpasang
+> (mod VCC biasa). Kalau relay tidak trigger dengan isyarat 3.3V,
+> beli modul relay bertanda "3.3V trigger" atau "optocoupler low-level trigger".
+
+### A4. Buzzer aktif → ESP32
+
+| Pin Buzzer | Sambung ke |
+|---|---|
+| + (kaki panjang) | GPIO 27 |
+| − | GND |
+
+*(Guna buzzer aktif 3.3V–5V jenis kecil. Kalau bunyi lemah, perlu transistor NPN — tanya saya nanti.)*
+
+### A5. Reed switch (sensor pintu) → ESP32
+
+| Kaki reed switch | Sambung ke |
+|---|---|
+| Kaki 1 | GPIO 25 |
+| Kaki 2 | GND |
+
+Pasang magnet di pintu, reed switch di bingkai pintu. Tiada polarity — boleh terbalik.
+
+### A6. Butang EXIT (dalam stor) → ESP32
+
+| Kaki butang | Sambung ke |
+|---|---|
+| Kaki 1 | GPIO 32 |
+| Kaki 2 | GND |
+
+### A7. Bekalan kuasa keseluruhan (Stor)
+
+| Komponen | Kuasa |
+|---|---|
+| ESP32 | USB 5V (atau pin VIN 5V) |
+| LCD, Relay | 5V dari pin VIN ESP32 |
+| RC522 | 3.3V dari pin 3V3 ESP32 |
+| Maglock | Adapter 12V 2A berasingan (melalui relay) |
+
+---
+
+## B. PERANTI KEHADIRAN
+
+### B1. Sensor cap jari AS608/R307 → ESP32
+
+| Wayar Sensor | Sambung ke | Nota |
+|---|---|---|
+| Merah (VCC) | 5V (VIN) | R307 terima 4.2V–6V |
+| Hitam (GND) | GND | |
+| Hijau (TX sensor) | GPIO 16 (RX2) | TX sensor → RX ESP32 |
+| Putih (RX sensor) | GPIO 17 (TX2) | RX sensor → TX ESP32 |
+
+> ⚠️ Silang TX/RX: TX sensor masuk ke RX ESP32, RX sensor masuk ke TX ESP32.
+> Kalau sensor tidak dikesan ("SENSOR GAGAL!" di LCD), perkara pertama
+> untuk semak ialah pasangan TX/RX ini terbalik atau tidak.
+
+### B2. LCD 2004 + I2C backpack → ESP32
+
+| Pin LCD | Sambung ke |
+|---|---|
+| VCC | 5V (VIN) |
+| GND | GND |
+| SDA | GPIO 21 |
+| SCL | GPIO 22 |
+
+### B3. Buzzer aktif → ESP32
+
+| Pin Buzzer | Sambung ke |
+|---|---|
+| + | GPIO 27 |
+| − | GND |
+
+### B4. Bekalan kuasa (Kehadiran)
+
+ESP32 melalui USB 5V atau adapter 5V ke pin VIN. Semua komponen lain
+(LCD, sensor, buzzer) ambil kuasa dari ESP32 — tiada bekalan luar diperlukan.
+
+---
+
+## Senarai semak sebelum ON
+
+- [ ] RC522 disambung ke **3.3V**, bukan 5V
+- [ ] GND adapter 12V disambung ke GND ESP32 (common ground)
+- [ ] Maglock melalui terminal **NC** relay (fail-safe)
+- [ ] Butang EXIT berfungsi sebelum pintu dikunci buat kali pertama
+- [ ] TX/RX sensor cap jari bersilang (TX→RX, RX→TX)
+- [ ] Uji butang EXIT dan maglock DULU sebelum pasang di pintu sebenar
+
+---
+
 ## 1. Peranti Stor (`stor_esp32`)
 
 ### Pin (DIBETULKAN — RST pindah ke GPIO33, bukan 22)
