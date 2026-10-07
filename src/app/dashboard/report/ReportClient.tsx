@@ -31,6 +31,9 @@ export default function ReportClient({ user }: { user: SessionUser }) {
   const [replies, setReplies] = useState<ReportReply[]>([]);
   const [replyText, setReplyText] = useState("");
   const [form, setForm] = useState({ room_id: "", category: "maintenance", title: "", description: "" });
+  const [photo, setPhoto] = useState<string>("");
+  const [uploading, setUploading] = useState(false);
+  const [replyPhoto, setReplyPhoto] = useState<string>("");
 
   const isPriv = user.role === "admin" || user.role === "supervisor";
   const isMaintenance = user.role === "maintenance";
@@ -80,12 +83,32 @@ export default function ReportClient({ user }: { user: SessionUser }) {
     if (active?.id === id) setActive(null);
   }
 
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>, setter: (v: string) => void) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const base64 = String(reader.result);
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: base64 }),
+      });
+      const data = await res.json();
+      setUploading(false);
+      if (data.ok) setter(data.url);
+      else alert(data.error ?? "Upload gambar gagal. Pastikan Cloudinary diset.");
+    };
+    reader.readAsDataURL(file);
+  }
+
   async function submitNew(e: React.FormEvent) {
     e.preventDefault();
     const res = await fetch("/api/reports", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
+      body: JSON.stringify({ ...form, photo_url: photo }),
     });
     const data = await res.json();
     if (!data.ok) {
@@ -94,6 +117,7 @@ export default function ReportClient({ user }: { user: SessionUser }) {
     }
     setShowNew(false);
     setForm({ room_id: "", category: "maintenance", title: "", description: "" });
+    setPhoto("");
     load();
   }
 
@@ -103,9 +127,10 @@ export default function ReportClient({ user }: { user: SessionUser }) {
     await fetch("/api/reports/replies", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ report_id: active.id, message: replyText }),
+      body: JSON.stringify({ report_id: active.id, message: replyText, photo_url: replyPhoto }),
     });
     setReplyText("");
+    setReplyPhoto("");
     openReport(active);
   }
 
@@ -157,8 +182,17 @@ export default function ReportClient({ user }: { user: SessionUser }) {
             </select>
             <input placeholder="Tajuk" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm" required />
             <textarea placeholder="Keterangan" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm" rows={3} />
+            <div>
+              <label className="block text-xs text-neutral-500 mb-1">Gambar (pilihan)</label>
+              <input type="file" accept="image/*" capture="environment" onChange={(e) => handleFile(e, setPhoto)} className="w-full text-sm" />
+              {uploading && <p className="text-xs text-neutral-400 mt-1">Memuat naik...</p>}
+              {photo && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={photo} alt="Pratonton" className="mt-2 rounded-lg w-full max-h-40 object-cover" />
+              )}
+            </div>
             <div className="flex gap-2 pt-1">
-              <button type="submit" className="flex-1 rounded-lg bg-neutral-900 py-2.5 text-sm text-white">Hantar</button>
+              <button type="submit" disabled={uploading} className="flex-1 rounded-lg bg-neutral-900 py-2.5 text-sm text-white disabled:opacity-50">Hantar</button>
               <button type="button" onClick={() => setShowNew(false)} className="rounded-lg border border-neutral-300 px-4 py-2.5 text-sm">Batal</button>
             </div>
           </form>
@@ -235,14 +269,23 @@ export default function ReportClient({ user }: { user: SessionUser }) {
                   </div>
                 ))}
               </div>
-              <form onSubmit={sendReply} className="mt-3 flex gap-2">
-                <input
-                  value={replyText}
-                  onChange={(e) => setReplyText(e.target.value)}
-                  placeholder="Tulis balasan..."
-                  className="flex-1 rounded-lg border border-neutral-300 px-3 py-2 text-sm"
-                />
-                <button className="rounded-lg bg-neutral-900 px-4 py-2 text-sm text-white">Hantar</button>
+              <form onSubmit={sendReply} className="mt-3 space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    placeholder="Tulis balasan..."
+                    className="flex-1 rounded-lg border border-neutral-300 px-3 py-2 text-sm"
+                  />
+                  <button className="rounded-lg bg-neutral-900 px-4 py-2 text-sm text-white">Hantar</button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input type="file" accept="image/*" capture="environment" onChange={(e) => handleFile(e, setReplyPhoto)} className="text-xs" />
+                  {replyPhoto && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={replyPhoto} alt="Pratonton" className="h-10 w-10 rounded object-cover" />
+                  )}
+                </div>
               </form>
             </div>
           </div>
