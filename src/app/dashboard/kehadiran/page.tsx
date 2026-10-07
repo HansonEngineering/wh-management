@@ -1,10 +1,11 @@
-export default function KehadiranPage() {
-  return (
-    <div>
-      <h1 className="text-2xl font-semibold">Kehadiran</h1>
-      <p className="mt-2 text-neutral-500">
-        Modul kehadiran (thumbprint, on time/lewat dan OT) akan dibina dalam fasa seterusnya.
-      </p>
-    </div>
-  );
+import { getSession } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import KehadiranClient from "./KehadiranClient";
+
+export const dynamic = "force-dynamic";
+
+export default async function KehadiranPage() {
+  const session = await getSession();
+  if (!session) redirect("/login");
+  return <KehadiranClient user={session} />;
 }

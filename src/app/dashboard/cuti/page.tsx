@@ -1,10 +1,11 @@
-export default function CutiPage() {
-  return (
-    <div>
-      <h1 className="text-2xl font-semibold">Cuti</h1>
-      <p className="mt-2 text-neutral-500">
-        Modul cuti (permohonan, kelulusan dan kalendar) akan dibina dalam fasa seterusnya.
-      </p>
-    </div>
-  );
+import { getSession } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import CutiClient from "./CutiClient";
+
+export const dynamic = "force-dynamic";
+
+export default async function CutiPage() {
+  const session = await getSession();
+  if (!session) redirect("/login");
+  return <CutiClient user={session} />;
 }

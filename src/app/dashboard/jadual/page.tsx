@@ -1,10 +1,11 @@
-export default function JadualPage() {
-  return (
-    <div>
-      <h1 className="text-2xl font-semibold">Jadual Syif</h1>
-      <p className="mt-2 text-neutral-500">
-        Modul jadual syif (timetable, tukar syif dan emergency cover) akan dibina dalam fasa seterusnya.
-      </p>
-    </div>
-  );
+import { getSession } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import JadualClient from "./JadualClient";
+
+export const dynamic = "force-dynamic";
+
+export default async function JadualPage() {
+  const session = await getSession();
+  if (!session) redirect("/login");
+  return <JadualClient user={session} />;
 }
