@@ -1,10 +1,11 @@
-export default function StokPage() {
-  return (
-    <div>
-      <h1 className="text-2xl font-semibold">Stok</h1>
-      <p className="mt-2 text-neutral-500">
-        Modul stok (baki, alert, kiraan stok fizikal dan linen) akan dibina dalam fasa seterusnya.
-      </p>
-    </div>
-  );
+import { getSession } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import StokClient from "./StokClient";
+
+export const dynamic = "force-dynamic";
+
+export default async function StokPage() {
+  const session = await getSession();
+  if (!session) redirect("/login");
+  return <StokClient user={session} />;
 }

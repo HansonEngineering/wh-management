@@ -1,10 +1,11 @@
-export default function StorPage() {
-  return (
-    <div>
-      <h1 className="text-2xl font-semibold">Stor</h1>
-      <p className="mt-2 text-neutral-500">
-        Modul stor (sesi scan kad, stock out dan pulangan) akan dibina dalam fasa seterusnya.
-      </p>
-    </div>
-  );
+import { getSession } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import StorClient from "./StorClient";
+
+export const dynamic = "force-dynamic";
+
+export default async function StorPage() {
+  const session = await getSession();
+  if (!session) redirect("/login");
+  return <StorClient user={session} />;
 }
