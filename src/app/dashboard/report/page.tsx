@@ -1,10 +1,11 @@
-export default function ReportPage() {
-  return (
-    <div>
-      <h1 className="text-2xl font-semibold">Report</h1>
-      <p className="mt-2 text-neutral-500">
-        Modul report dan maintenance akan dibina dalam fasa seterusnya.
-      </p>
-    </div>
-  );
+import { getSession } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import ReportClient from "./ReportClient";
+
+export const dynamic = "force-dynamic";
+
+export default async function ReportPage() {
+  const session = await getSession();
+  if (!session) redirect("/login");
+  return <ReportClient user={session} />;
 }
