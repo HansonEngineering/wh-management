@@ -3,9 +3,16 @@
   "name": "wh-management",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-10-01",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": {
     "binding": "ASSETS",
     "directory": ".open-next/assets"
+  },
+  "vars": {
+    "GOOGLE_SHEET_ID": "17Jh87fl9mdbfRTzpQoLfcGnrA56sDNwFPdRPGeExvkc",
+    "GOOGLE_SERVICE_ACCOUNT_EMAIL": "wh-management-app@wh-management-510918.iam.gserviceaccount.com",
+    "CLOUDINARY_CLOUD_NAME": "ntzcoljz",
+    "CLOUDINARY_UPLOAD_PRESET": "wh_reports",
+    "NEXT_PUBLIC_VAPID_PUBLIC_KEY": "BAYYbYafHQqjQx-nxzmE3O6CuV3ZMvwq9bjMtcvGYrJxezG8QKJ9eD5jmE9pPZuY4wvJfsb0Wry8QA3tuPuYLAc"
   }
 }

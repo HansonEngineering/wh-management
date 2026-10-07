@@ -1,27 +1,107 @@
-import { google } from "googleapis";
+import * as jose from "jose";
 import { SHEET_HEADERS } from "./constants";
 
-function getAuth() {
+// Lapisan Google Sheets menggunakan REST API terus (fetch + JWT service account).
+// Versi ini serasi dengan Cloudflare Workers — tiada googleapis/gaxios.
+
+const SCOPES = "https://www.googleapis.com/auth/spreadsheets";
+const TOKEN_URL = "https://oauth2.googleapis.com/token";
+const API_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
+
+let cachedToken: { token: string; exp: number } | null = null;
+
+function getCredentials() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   const key = process.env.GOOGLE_PRIVATE_KEY;
   if (!email || !key) {
     throw new Error("GOOGLE_SERVICE_ACCOUNT_EMAIL atau GOOGLE_PRIVATE_KEY belum diset");
   }
-  return new google.auth.JWT({
-    email,
-    key: key.replace(/\\n/g, "\n"),
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-  });
-}
-
-export function getSheets() {
-  return google.sheets({ version: "v4", auth: getAuth() });
+  return { email, key: key.replace(/\\n/g, "\n") };
 }
 
 export function getSpreadsheetId(): string {
   const id = process.env.GOOGLE_SHEET_ID;
   if (!id) throw new Error("GOOGLE_SHEET_ID belum diset");
   return id;
+}
+
+// Dapatkan access token OAuth2 melalui aliran JWT bearer (service account)
+async function getAccessToken(): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  if (cachedToken && cachedToken.exp > now + 60) return cachedToken.token;
+
+  const { email, key } = getCredentials();
+  const privateKey = await jose.importPKCS8(key, "RS256");
+  const assertion = await new jose.SignJWT({ scope: SCOPES })
+    .setProtectedHeader({ alg: "RS256", typ: "JWT" })
+    .setIssuer(email)
+    .setAudience(TOKEN_URL)
+    .setIssuedAt(now)
+    .setExpirationTime(now + 3600)
+    .sign(privateKey);
+
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion,
+    }).toString(),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    access_token?: string;
+    expires_in?: number;
+    error?: string;
+    error_description?: string;
+  };
+  if (!res.ok || !data.access_token) {
+    throw new Error(`Google token gagal: ${data.error ?? res.status} ${data.error_description ?? ""}`);
+  }
+  cachedToken = { token: data.access_token, exp: now + (data.expires_in ?? 3600) };
+  return data.access_token;
+}
+
+// Panggilan asas ke Sheets API
+async function apiFetch(path: string, init?: RequestInit): Promise<any> {
+  const token = await getAccessToken();
+  const res = await fetch(`${API_BASE}/${getSpreadsheetId()}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`Sheets API ${res.status}: ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+function valuesGet(range: string): Promise<any> {
+  return apiFetch(`/values/${encodeURIComponent(range)}`);
+}
+
+function valuesAppend(range: string, values: string[][]): Promise<any> {
+  return apiFetch(`/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
+    method: "POST",
+    body: JSON.stringify({ values }),
+  });
+}
+
+function valuesUpdate(range: string, values: string[][], inputOption: "RAW" | "USER_ENTERED" = "USER_ENTERED"): Promise<any> {
+  return apiFetch(`/values/${encodeURIComponent(range)}?valueInputOption=${inputOption}`, {
+    method: "PUT",
+    body: JSON.stringify({ values }),
+  });
+}
+
+function batchUpdate(requests: unknown[]): Promise<any> {
+  return apiFetch(`:batchUpdate`, {
+    method: "POST",
+    body: JSON.stringify({ requests }),
+  });
 }
 
 // Tukar nombor kolum (0-based) kepada huruf A, B, ... Z, AA, AB
@@ -49,17 +129,13 @@ function cellToString(v: unknown): string {
 
 // Baca semua baris sebagai objek, ikut header
 export async function readAll<T extends Record<string, unknown>>(tab: string): Promise<T[]> {
-  const sheets = getSheets();
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: getSpreadsheetId(),
-    range: rangeFor(tab),
-  });
-  const rows = res.data.values ?? [];
+  const res = await valuesGet(rangeFor(tab));
+  const rows = res.values ?? [];
   if (rows.length < 2) return [];
-  const headers = rows[0].map((h) => String(h));
-  return rows.slice(1).map((row) => {
+  const headers = rows[0].map((h: unknown) => String(h));
+  return rows.slice(1).map((row: unknown[]) => {
     const obj: Record<string, string> = {};
-    headers.forEach((h, i) => {
+    headers.forEach((h: string, i: number) => {
       obj[h] = cellToString(row[i]);
     });
     return obj as unknown as T;
@@ -68,12 +144,8 @@ export async function readAll<T extends Record<string, unknown>>(tab: string): P
 
 // Cari nombor baris (1-based dalam sheet) ikut nilai kolum id
 export async function findRowById(tab: string, id: string): Promise<number> {
-  const sheets = getSheets();
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: getSpreadsheetId(),
-    range: `'${tab}'!A:A`,
-  });
-  const rows = res.data.values ?? [];
+  const res = await valuesGet(`'${tab}'!A:A`);
+  const rows = res.values ?? [];
   for (let i = 1; i < rows.length; i++) {
     if (cellToString(rows[i][0]) === id) return i + 1;
   }
@@ -83,14 +155,8 @@ export async function findRowById(tab: string, id: string): Promise<number> {
 // Tambah baris baru
 export async function appendRow(tab: string, obj: Record<string, unknown>): Promise<void> {
   const headers = SHEET_HEADERS[tab];
-  const sheets = getSheets();
   const values = [headers.map((h) => (obj[h] === undefined || obj[h] === null ? "" : String(obj[h])))];
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: getSpreadsheetId(),
-    range: `'${tab}'!A:A`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values },
-  });
+  await valuesAppend(`'${tab}'!A:A`, values);
 }
 
 // Kemas kini baris sedia ada ikut id
@@ -98,25 +164,16 @@ export async function updateRow(tab: string, id: string, obj: Record<string, unk
   const rowNum = await findRowById(tab, id);
   if (rowNum < 0) return false;
   const headers = SHEET_HEADERS[tab];
-  const sheets = getSheets();
 
   // Baca baris sedia ada supaya kolum yang tak dihantar kekal
-  const existing = await sheets.spreadsheets.values.get({
-    spreadsheetId: getSpreadsheetId(),
-    range: `'${tab}'!A${rowNum}:${colLetter(headers.length - 1)}${rowNum}`,
-  });
-  const current = existing.data.values?.[0] ?? [];
+  const existing = await valuesGet(`'${tab}'!A${rowNum}:${colLetter(headers.length - 1)}${rowNum}`);
+  const current = existing.values?.[0] ?? [];
   const merged = headers.map((h, i) => {
     if (obj[h] !== undefined) return obj[h] === null ? "" : String(obj[h]);
     return cellToString(current[i]);
   });
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: getSpreadsheetId(),
-    range: `'${tab}'!A${rowNum}:${colLetter(headers.length - 1)}${rowNum}`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [merged] },
-  });
+  await valuesUpdate(`'${tab}'!A${rowNum}:${colLetter(headers.length - 1)}${rowNum}`, [merged]);
   return true;
 }
 
@@ -124,50 +181,37 @@ export async function updateRow(tab: string, id: string, obj: Record<string, unk
 export async function deleteRow(tab: string, id: string): Promise<boolean> {
   const rowNum = await findRowById(tab, id);
   if (rowNum < 0) return false;
-  const sheets = getSheets();
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: getSpreadsheetId() });
-  const sheet = meta.data.sheets?.find((s) => s.properties?.title === tab);
+  const meta = await apiFetch("");
+  const sheet = (meta.sheets ?? []).find((s: any) => s.properties?.title === tab);
   const sheetId = sheet?.properties?.sheetId;
   if (sheetId === undefined || sheetId === null) return false;
 
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: getSpreadsheetId(),
-    requestBody: {
-      requests: [
-        {
-          deleteDimension: {
-            range: {
-              sheetId,
-              dimension: "ROWS",
-              startIndex: rowNum - 1,
-              endIndex: rowNum,
-            },
-          },
+  await batchUpdate([
+    {
+      deleteDimension: {
+        range: {
+          sheetId,
+          dimension: "ROWS",
+          startIndex: rowNum - 1,
+          endIndex: rowNum,
         },
-      ],
+      },
     },
-  });
+  ]);
   return true;
 }
 
 // Cipta semua tab dan header (diguna semasa setup awal)
 export async function initializeSpreadsheet(): Promise<{ created: string[]; existing: string[] }> {
-  const sheets = getSheets();
-  const spreadsheetId = getSpreadsheetId();
-  const meta = await sheets.spreadsheets.get({ spreadsheetId });
-  const existingTitles = new Set((meta.data.sheets ?? []).map((s) => s.properties?.title ?? ""));
+  const meta = await apiFetch("");
+  const existingTitles = new Set((meta.sheets ?? []).map((s: any) => s.properties?.title ?? ""));
 
   const created: string[] = [];
   const existing: string[] = [];
   const toCreate = Object.keys(SHEET_HEADERS).filter((t) => !existingTitles.has(t));
 
   if (toCreate.length > 0) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests: toCreate.map((title) => ({ addSheet: { properties: { title } } })),
-      },
-    });
+    await batchUpdate(toCreate.map((title) => ({ addSheet: { properties: { title } } })));
     created.push(...toCreate);
   }
   Object.keys(SHEET_HEADERS).forEach((t) => {
@@ -176,12 +220,7 @@ export async function initializeSpreadsheet(): Promise<{ created: string[]; exis
 
   // Tulis header untuk setiap tab
   for (const [tab, headers] of Object.entries(SHEET_HEADERS)) {
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `'${tab}'!A1:${colLetter(headers.length - 1)}1`,
-      valueInputOption: "RAW",
-      requestBody: { values: [headers] },
-    });
+    await valuesUpdate(`'${tab}'!A1:${colLetter(headers.length - 1)}1`, [headers], "RAW");
   }
 
   return { created, existing };
@@ -210,12 +249,8 @@ export async function setSetting(key: string, value: string, description?: strin
   const exists = rows.some((r) => r.key === key);
   const now = new Date().toISOString();
   if (exists) {
-    const sheets = getSheets();
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: getSpreadsheetId(),
-      range: `'Settings'!A:A`,
-    });
-    const col = res.data.values ?? [];
+    const res = await valuesGet(`'Settings'!A:A`);
+    const col = res.values ?? [];
     let rowNum = -1;
     for (let i = 1; i < col.length; i++) {
       if (String(col[i][0]) === key) {
@@ -224,12 +259,7 @@ export async function setSetting(key: string, value: string, description?: strin
       }
     }
     if (rowNum > 0) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: getSpreadsheetId(),
-        range: `'Settings'!B${rowNum}:D${rowNum}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[value, description ?? "", now]] },
-      });
+      await valuesUpdate(`'Settings'!B${rowNum}:D${rowNum}`, [[value, description ?? "", now]]);
     }
   } else {
     await appendRow("Settings", { key, value, description: description ?? "", updated_at: now });
