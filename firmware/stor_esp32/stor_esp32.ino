@@ -1,0 +1,333 @@
+/*
+ * ============================================================================
+ * WH MANAGEMENT — PERANTI STOR (ESP32)
+ * WARISAN HOTEL
+ * ============================================================================
+ * Fungsi:
+ *   1. Imbas kad RFID -> hantar ke app -> buka pintu maglock kalau berdaftar
+ *   2. LCD papar nama staff + timer submit
+ *   3. Buzzer berbunyi kalau timer tamat tapi staff belum submit dalam app
+ *   4. Sensor pintu (reed switch) -> beritahu app bila pintu ditutup
+ *   5. Butang EXIT di dalam stor -> buka pintu bila-bila masa (keselamatan)
+ *   6. Mod offline: kalau WiFi putus, kad dalam senarai OFFLINE_CARDS tetap
+ *      boleh buka pintu
+ *
+ * Library yang perlu dipasang (Arduino IDE -> Sketch -> Manage Libraries):
+ *   - "MFRC522" oleh GithubCommunity
+ *   - "LiquidCrystal I2C" oleh Frank de Brabander
+ *   - "ArduinoJson" oleh Benoit Blanchon (versi 7.x)
+ *   - Board: "ESP32" oleh Espressif (dari Boards Manager)
+ * ============================================================================
+ */
+
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <ArduinoJson.h>
+
+// ===================== KONFIGURASI — UBAH DI SINI =====================
+
+// WiFi hotel
+const char* WIFI_SSID     = "NAMA_WIFI_HOTEL";
+const char* WIFI_PASSWORD = "PASSWORD_WIFI";
+
+// Alamat app (Cloudflare Workers)
+const char* API_BASE = "https://wh-management.hansonglenn01.workers.dev";
+
+// Kunci peranti — MESTI sama dengan DEVICE_API_KEY dalam Cloudflare/.env.local
+const char* DEVICE_API_KEY = "78ee05b0294c0b22e2c6e6d1735c2bdd9d4c2de0937feb6d";
+
+// Kad yang dibenarkan buka pintu walau WiFi putus (mod kecemasan).
+// Isi UID kad admin/manager di sini. Format: "AA BB CC DD"
+const char* OFFLINE_CARDS[] = {
+  // "AA BB CC DD",
+};
+const int OFFLINE_CARDS_COUNT = 0;  // tukar ikut bilangan kad di atas
+
+// ===================== PIN (jangan ubah kalau ikut wiring standard) =========
+// RFID RC522 (SPI)
+#define PIN_RFID_SS    5
+#define PIN_RFID_RST   33   // NOTA: README lama tulis 22 — itu konflik dengan LCD SCL
+#define PIN_RFID_SCK   18
+#define PIN_RFID_MOSI  23
+#define PIN_RFID_MISO  19
+// LCD 1602 I2C
+#define PIN_LCD_SDA    21
+#define PIN_LCD_SCL    22
+// Lain-lain
+#define PIN_RELAY      26   // relay maglock
+#define PIN_BUZZER     27
+#define PIN_DOOR       25   // reed switch (INPUT_PULLUP, LOW = pintu tutup)
+#define PIN_EXIT_BTN   32   // butang exit dalam stor (INPUT_PULLUP, LOW = ditekan)
+
+// ===================== TETAPAN MASA =========================================
+const unsigned long UNLOCK_MS       = 5000;   // maglock terbuka 5 saat
+const unsigned long POLL_SESSION_MS = 5000;   // semak status submit setiap 5s
+const unsigned long WIFI_RETRY_MS   = 10000;  // cuba semula WiFi setiap 10s
+
+// ===================== OBJEK =================================================
+MFRC522 rfid(PIN_RFID_SS, PIN_RFID_RST);
+LiquidCrystal_I2C lcd(0x27, 16, 2);   // kalau LCD tidak papar apa-apa, cuba 0x3F
+WiFiClientSecure secureClient;
+
+// ===================== KEADAAN ==============================================
+bool sessionActive = false;
+unsigned long sessionDeadline = 0;    // masa submit_deadline (millis anggaran)
+unsigned long lastPoll = 0;
+unsigned long lastWifiTry = 0;
+bool alarmOn = false;
+unsigned long lastBeep = 0;
+bool beepState = false;
+int lastDoorState = HIGH;
+unsigned long lastDoorChange = 0;
+
+// ===================== UTILITI ==============================================
+void lcdMsg(const String& line1, const String& line2 = "") {
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print(line1.substring(0, 16));
+  lcd.setCursor(0, 1); lcd.print(line2.substring(0, 16));
+}
+
+void beep(int times, int onMs = 100, int offMs = 100) {
+  for (int i = 0; i < times; i++) {
+    digitalWrite(PIN_BUZZER, HIGH); delay(onMs);
+    digitalWrite(PIN_BUZZER, LOW);  if (i < times - 1) delay(offMs);
+  }
+}
+
+void unlockDoor() {
+  // Maglock jenis fail-safe: relay ON = potong kuasa maglock = pintu TERBUKA.
+  // Wiring: kuasa maglock melalui terminal NC relay. Kalau terbalik, tukar
+  // HIGH/LOW di sini.
+  digitalWrite(PIN_RELAY, HIGH);
+  delay(UNLOCK_MS);
+  digitalWrite(PIN_RELAY, LOW);
+}
+
+bool wifiReady() {
+  if (WiFi.status() == WL_CONNECTED) return true;
+  if (millis() - lastWifiTry > WIFI_RETRY_MS) {
+    lastWifiTry = millis();
+    WiFi.disconnect();
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  }
+  return false;
+}
+
+// Hantar POST JSON ke app. Pulangkan kod HTTP, atau -1 kalau gagal sambung.
+int postJson(const char* path, const String& jsonBody, String& responseOut) {
+  if (!wifiReady()) return -1;
+  HTTPClient http;
+  String url = String(API_BASE) + path;
+  http.begin(secureClient, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-device-key", DEVICE_API_KEY);
+  http.setTimeout(10000);
+  int code = http.POST(jsonBody);
+  if (code > 0) responseOut = http.getString();
+  http.end();
+  return code;
+}
+
+// GET ringkas ke app (untuk semak status sesi)
+int getJson(const char* path, String& responseOut) {
+  if (!wifiReady()) return -1;
+  HTTPClient http;
+  String url = String(API_BASE) + path;
+  http.begin(secureClient, url);
+  http.addHeader("x-device-key", DEVICE_API_KEY);
+  http.setTimeout(10000);
+  int code = http.GET();
+  if (code > 0) responseOut = http.getString();
+  http.end();
+  return code;
+}
+
+// ===================== LOGIK RFID ===========================================
+String readCardUid() {
+  if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return "";
+  String uid = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    if (rfid.uid.uidByte[i] < 0x10) uid += "0";
+    uid += String(rfid.uid.uidByte[i], HEX);
+    if (i < rfid.uid.size - 1) uid += " ";
+  }
+  uid.toUpperCase();
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
+  return uid;
+}
+
+bool isOfflineCardAllowed(const String& uid) {
+  for (int i = 0; i < OFFLINE_CARDS_COUNT; i++) {
+    if (uid.equalsIgnoreCase(OFFLINE_CARDS[i])) return true;
+  }
+  return false;
+}
+
+void handleCard(const String& uid) {
+  lcdMsg("Mengesahkan...", uid);
+
+  String resp;
+  String body = "{\"rfid_uid\":\"" + uid + "\"}";
+  int code = postJson("/api/stor/open", body, resp);
+
+  if (code == 200) {
+    JsonDocument doc;
+    if (deserializeJson(doc, resp) == DeserializationError::Ok && doc["ok"]) {
+      String name = doc["staff_name"] | "Staff";
+      int timerMin = doc["timer_minutes"] | 5;
+      sessionActive = true;
+      sessionDeadline = millis() + (unsigned long)timerMin * 60UL * 1000UL;
+      alarmOn = false;
+      beep(1);
+      lcdMsg("Selamat masuk:", name);
+      unlockDoor();
+      return;
+    }
+  }
+
+  if (code == 403) {
+    beep(3);
+    lcdMsg("Kad tidak", "berdaftar!");
+  } else if (code == 409) {
+    JsonDocument doc;
+    deserializeJson(doc, resp);
+    String blockedBy = doc["blocked_by"] | "staff lain";
+    beep(2);
+    lcdMsg("Stor digunakan:", blockedBy);
+  } else if (code == 401) {
+    beep(3);
+    lcdMsg("Ralat kunci", "peranti (401)");
+  } else {
+    // WiFi putus / server tidak sampai -> mod offline
+    if (isOfflineCardAllowed(uid)) {
+      beep(1);
+      lcdMsg("MOD OFFLINE", "Pintu dibuka");
+      unlockDoor();
+    } else {
+      beep(3);
+      lcdMsg("Tiada sambungan", "Cuba lagi");
+    }
+  }
+  delay(2000);
+  lcdMsg("Imbas kad anda", "");
+}
+
+// ===================== LOGIK PINTU ==========================================
+void handleDoor() {
+  int state = digitalRead(PIN_DOOR);
+  if (state != lastDoorState && millis() - lastDoorChange > 300) {  // debounce
+    lastDoorChange = millis();
+    lastDoorState = state;
+    bool closed = (state == LOW);
+    String resp;
+    String body = String("{\"closed\":") + (closed ? "true" : "false") + "}";
+    postJson("/api/stor/door", body, resp);
+    if (closed) {
+      sessionActive = false;
+      alarmOn = false;
+      digitalWrite(PIN_BUZZER, LOW);
+      lcdMsg("Pintu ditutup", "Terima kasih!");
+      delay(1500);
+      lcdMsg("Imbas kad anda", "");
+    }
+  }
+}
+
+void handleExitButton() {
+  static unsigned long lastPress = 0;
+  if (digitalRead(PIN_EXIT_BTN) == LOW && millis() - lastPress > 1000) {
+    lastPress = millis();
+    lcdMsg("EXIT dibuka", "");
+    unlockDoor();
+    lcdMsg("Imbas kad anda", "");
+  }
+}
+
+// ===================== TIMER + BUZZER =======================================
+void handleSessionTimer() {
+  if (!sessionActive) return;
+
+  // Semak dengan app sama ada staff sudah submit (setiap 5 saat)
+  if (millis() - lastPoll > POLL_SESSION_MS) {
+    lastPoll = millis();
+    String resp;
+    int code = getJson("/api/stor/session", resp);
+    if (code == 200) {
+      JsonDocument doc;
+      if (deserializeJson(doc, resp) == DeserializationError::Ok) {
+        if (doc["session"].isNull()) {
+          // Tiada sesi "open" -> staff sudah submit / sesi ditutup
+          sessionActive = false;
+          alarmOn = false;
+          digitalWrite(PIN_BUZZER, LOW);
+          lcdMsg("Imbas kad anda", "");
+          return;
+        }
+      }
+    }
+  }
+
+  // Tamat masa tapi belum submit -> buzzer berulang
+  if (millis() > sessionDeadline) {
+    alarmOn = true;
+  }
+  if (alarmOn) {
+    if (millis() - lastBeep > 2000) {
+      lastBeep = millis();
+      beepState = !beepState;
+      digitalWrite(PIN_BUZZER, beepState ? HIGH : LOW);
+    }
+    lcdMsg("SILA SUBMIT", "dalam app!");
+  }
+}
+
+// ===================== SETUP & LOOP =========================================
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(PIN_RELAY, OUTPUT);
+  pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(PIN_DOOR, INPUT_PULLUP);
+  pinMode(PIN_EXIT_BTN, INPUT_PULLUP);
+  digitalWrite(PIN_RELAY, LOW);
+  digitalWrite(PIN_BUZZER, LOW);
+
+  lcd.init();
+  lcd.backlight();
+  lcdMsg("WH Management", "Memulakan...");
+
+  SPI.begin(PIN_RFID_SCK, PIN_RFID_MISO, PIN_RFID_MOSI, PIN_RFID_SS);
+  rfid.PCD_Init();
+
+  secureClient.setInsecure();  // terima sijil HTTPS tanpa semakan (mudah untuk hotel)
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
+    delay(300);
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    lcdMsg("WiFi OK", WiFi.localIP().toString());
+  } else {
+    lcdMsg("WiFi GAGAL", "Mod offline");
+  }
+  delay(1500);
+  beep(1);
+  lcdMsg("Imbas kad anda", "");
+}
+
+void loop() {
+  String uid = readCardUid();
+  if (uid.length() > 0) handleCard(uid);
+  handleDoor();
+  handleExitButton();
+  handleSessionTimer();
+  delay(100);
+}

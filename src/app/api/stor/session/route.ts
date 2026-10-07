@@ -4,9 +4,24 @@ import { SHEETS } from "@/lib/constants";
 import { requireRole } from "@/lib/auth";
 import type { StorSession } from "@/lib/types";
 
-// GET /api/stor/session — sesi stor yang sedang terbuka (untuk app staff)
-export async function GET() {
+// GET /api/stor/session — sesi stor yang sedang terbuka
+// - App staff: guna cookie login (pulang maklumat penuh)
+// - ESP32: guna header x-device-key (pulang status ringkas untuk buzzer/timer)
+export async function GET(req: Request) {
   try {
+    // Laluan peranti (ESP32)
+    const deviceKey = req.headers.get("x-device-key") ?? "";
+    const expected = process.env.DEVICE_API_KEY ?? "";
+    if (expected && deviceKey === expected) {
+      const sessions = await readAll<Record<string, string>>(SHEETS.STOR_SESSIONS);
+      const open = sessions.find((s) => s.status === "open");
+      if (!open) return NextResponse.json({ ok: true, session: null });
+      return NextResponse.json({
+        ok: true,
+        session: { id: open.id, status: open.status, submit_deadline: open.submit_deadline },
+      });
+    }
+
     const session = await requireRole(["admin", "supervisor", "housekeeping", "maintenance", "receptionist"]);
     const sessions = await readAll<Record<string, string>>(SHEETS.STOR_SESSIONS);
     const open = sessions.find((s) => s.status === "open");
