@@ -66,16 +66,14 @@ terbuka (pintu tidak terkunci semasa blackout). Ini yang dimahukan.
 
 ### A4. Dua buzzer aktif → ESP32 (berbunyi sama masa)
 
-Kod akan hidupkan **dua-dua** GPIO sekali — tidak perlu expansion board tambahan.
+Kod akan hidupkan **dua-dua** GPIO sekali.
 
-| Buzzer | Pin + | Pin − |
+| Buzzer | Pin + / terminal | Pin − |
 |---|---|---|
-| Buzzer 1 — di pintu stor | GPIO 27 | GND |
-| Buzzer 2 — di kaunter | GPIO 14 | GND |
+| Buzzer 1 — di pintu stor | GPIO 27 / D27 | GND |
+| Buzzer 2 — di kaunter | GPIO 14 / D14 | GND |
 
-Guna buzzer aktif 3.3V–5V. Kalau buzzer kaunter jauh (>10 m) dan bunyi lemah, sambung GPIO 14 ke modul relay kecil, kemudian relay hidupkan buzzer 5V/12V di kaunter.
-
-**Tidak perlu expansion board kedua.** ESP32 ada pin cukup. Expansion board yang kau sudah ada hanya memudahkan wiring (skru terminal) — guna dia untuk GPIO 14/25/27/32.
+Guna buzzer aktif 3.3V–5V. Kalau buzzer kaunter jauh (>10 m) dan bunyi lemah, sambung D14 ke modul relay kecil, kemudian relay hidupkan buzzer 5V/12V di kaunter.
 
 ### A5. Butang 1 — sensor pintu tutup → ESP32
 
@@ -105,6 +103,66 @@ Tekan = maglock terbuka 5 saat. Berfungsi walau WiFi putus (keselamatan).
 | LCD, Relay | 5V dari pin VIN ESP32 |
 | RC522 | 3.3V dari pin 3V3 ESP32 |
 | Maglock | Adapter 12V 2A berasingan (melalui relay) |
+
+### A8. Wiring melalui Expansion Board (disyorkan)
+
+Boleh dan **patut** guna expansion board. GPIO nombor **sama** — kau hanya skru wayar ke terminal yang bertulis `D25`, `D27`, dll. (D25 = GPIO 25).
+
+Pasang ESP32 ke socket expansion board (pin USB ESP32 ke luar). USB power masuk ke ESP32 seperti biasa.
+
+**Label terminal:** papan biasa tulis `D5` / `D18` / `3V3` / `GND` / `5V` / `VIN`. Kalau papan kau tulis `GPIO5` — itu sama dengan `D5`.
+
+#### Jadual skru (Stor — semua ke expansion board)
+
+| Komponen | Kaki komponen | Terminal expansion board | Rel kuasa |
+|---|---|---|---|
+| RFID RC522 | VCC | **3V3** | 3.3V — JANGAN 5V |
+| RFID RC522 | GND | GND | |
+| RFID RC522 | SDA (SS) | D5 | |
+| RFID RC522 | SCK | D18 | |
+| RFID RC522 | MOSI | D23 | |
+| RFID RC522 | MISO | D19 | |
+| RFID RC522 | RST | D33 | |
+| LCD 1602 I2C | VCC | 5V / VIN | 5V |
+| LCD 1602 I2C | GND | GND | |
+| LCD 1602 I2C | SDA | D21 | |
+| LCD 1602 I2C | SCL | D22 | |
+| Relay maglock | VCC | 5V / VIN | 5V |
+| Relay maglock | GND | GND | |
+| Relay maglock | IN | D26 | |
+| Buzzer 1 (pintu stor) | + | D27 | |
+| Buzzer 1 (pintu stor) | − | GND | |
+| Buzzer 2 (kaunter) | + | D14 | |
+| Buzzer 2 (kaunter) | − | GND | |
+| Butang 1 (pintu tutup) | kaki 1 | D25 | |
+| Butang 1 (pintu tutup) | kaki 2 | GND | |
+| Butang 2 (EXIT dalam) | kaki 1 | D32 | |
+| Butang 2 (EXIT dalam) | kaki 2 | GND | |
+| Adapter maglock 12V (−) | − | GND | common ground wajib |
+
+Sisi 12V maglock **tidak** masuk expansion board (terlalu besar arus). Tetap:
+
+```
+Adapter 12V (+) ──► COM relay
+NC relay        ──► Maglock (+)
+Adapter 12V (−) ──► Maglock (−)  DAN  GND expansion board
+```
+
+#### Pin simpanan untuk masa depan (jangan guna sekarang)
+
+Kosongkan terminal ni — senang tambah sensor/relay nanti tanpa ubah wiring sedia ada:
+
+| Terminal | Boleh tambah nanti |
+|---|---|
+| D4 | sensor / LED / relay tambahan |
+| D13 | sensor / LED / relay tambahan |
+| D15 | sensor / LED / relay tambahan |
+| D16 | UART / sensor |
+| D17 | UART / sensor |
+
+Elak D0, D2, D12 — pin boot ESP32, boleh buat board tak nak start.
+
+**Tidak perlu expansion board kedua.** Satu papan ni sudah cukup untuk sekarang + beberapa tambahan nanti.
 
 ---
 
