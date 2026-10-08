@@ -35,34 +35,40 @@ Dua peranti ESP32. Kod sedia ada dalam folder masing-masing:
 | SDA | GPIO 21 |
 | SCL | GPIO 22 |
 
-### A3. Modul Relay 1-channel → ESP32 + Maglock 12V
+### A3. Modul Relay 4-channel (guna Channel 1 sahaja) → Maglock 12V
 
-> Bahagian ini paling kritikal. Maglock perlukan **bekalan kuasa 12V berasingan**
-> (adapter 12V 2A) — ESP32 hanya menghidupkan relay.
+> 1-channel rosak pun tidak mengapa — 4-channel sama fungsi. Guna **IN1 / CH1**
+> sahaja. Channel 2–4 biar kosong untuk masa depan.
+>
+> Maglock perlukan **bekalan 12V berasingan** (adapter 12V 2A). ESP32 hanya
+> hantar isyarat ke IN1.
 
-**Sisi ESP32 (isyarat):**
+**Sisi isyarat (expansion board → modul relay):**
 
-| Pin Relay | Sambung ke |
+| Pin modul 4-channel | Sambung ke |
 |---|---|
-| VCC | 5V (VIN) |
-| GND | GND |
-| IN | GPIO 26 |
+| VCC | 5V / VIN expansion board |
+| GND | GND expansion board |
+| IN1 | D26 |
+| IN2, IN3, IN4 | *(jangan sambung)* |
 
-**Sisi kuasa (maglock) — wiring FAIL-SAFE:**
+Kalau ada jumper **JD-VCC** di modul, **biarkan terpasang**.
+
+**Sisi kuasa maglock — Channel 1 sahaja (terminal skru besar, biasanya paling kiri):**
+
+Setiap channel ada 3 skru: `NO` · `COM` · `NC`. Guna **CH1** sahaja:
 
 ```
-Adapter 12V (+) ──► COM relay
-NC relay        ──► Maglock (+)     [guna NC = Normally Closed]
+Adapter 12V (+) ──► COM  (Channel 1)
+NC Channel 1    ──► Maglock (+)     ← mesti NC, bukan NO
 Adapter 12V (−) ──► Maglock (−)
-Adapter 12V (−) ──► GND ESP32       [GND MESTI dikongsi/common ground]
+Adapter 12V (−) ──► GND expansion board   [common ground wajib]
 ```
 
-Dengan wiring NC: bila ESP32 mati/elektrik putus → relay terbuka → maglock
-terbuka (pintu tidak terkunci semasa blackout). Ini yang dimahukan.
+Dengan NC: elektrik putus → maglock hilang kuasa → pintu TERBUKA (fail-safe).
 
-> Kalau modul relay ada jumper **JD-VCC**, kekalkan jumper terpasang
-> (mod VCC biasa). Kalau relay tidak trigger dengan isyarat 3.3V,
-> beli modul relay bertanda "3.3V trigger" atau "optocoupler low-level trigger".
+Kod sudah diset `RELAY_ACTIVE_LOW = true` (sesuai 4-channel Songle). Kalau
+pintu TERBUKA masa idle (patut berkunci), tukar kepada `false` dalam `stor_esp32.ino`.
 
 ### A4. Dua buzzer aktif → ESP32 (berbunyi sama masa)
 
@@ -127,9 +133,9 @@ Pasang ESP32 ke socket expansion board (pin USB ESP32 ke luar). USB power masuk 
 | LCD 1602 I2C | GND | GND | |
 | LCD 1602 I2C | SDA | D21 | |
 | LCD 1602 I2C | SCL | D22 | |
-| Relay maglock | VCC | 5V / VIN | 5V |
-| Relay maglock | GND | GND | |
-| Relay maglock | IN | D26 | |
+| Relay 4-ch (CH1) | VCC | 5V / VIN | 5V |
+| Relay 4-ch (CH1) | GND | GND | |
+| Relay 4-ch (CH1) | IN1 | D26 | IN2–IN4 kosong |
 | Buzzer 1 (pintu stor) | + | D27 | |
 | Buzzer 1 (pintu stor) | − | GND | |
 | Buzzer 2 (kaunter) | + | D14 | |

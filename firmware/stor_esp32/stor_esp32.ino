@@ -60,11 +60,15 @@ const int OFFLINE_CARDS_COUNT = 0;  // tukar ikut bilangan kad di atas
 #define PIN_LCD_SDA    21
 #define PIN_LCD_SCL    22
 // Lain-lain
-#define PIN_RELAY           26   // relay maglock
+#define PIN_RELAY           26   // relay maglock — IN1 pada modul 4-channel
 #define PIN_BUZZER_STOR     27   // buzzer di pintu stor
 #define PIN_BUZZER_COUNTER  14   // buzzer di kaunter (berbunyi sama masa)
 #define PIN_DOOR            25   // Butang 1 / reed switch (INPUT_PULLUP, LOW = pintu tutup)
 #define PIN_EXIT_BTN        32   // Butang 2 EXIT dalam stor (INPUT_PULLUP, LOW = ditekan)
+
+// Modul 4-channel (Songle) hampir semua LOW-level trigger: IN LOW = relay ON.
+// Kalau maglock TERBUKA masa idle (patut berkunci), tukar kepada false.
+const bool RELAY_ACTIVE_LOW = true;
 
 // ===================== TETAPAN MASA =========================================
 const unsigned long UNLOCK_MS       = 5000;   // maglock terbuka 5 saat
@@ -106,13 +110,20 @@ void beep(int times, int onMs = 100, int offMs = 100) {
   }
 }
 
+void relayLock() {
+  digitalWrite(PIN_RELAY, RELAY_ACTIVE_LOW ? HIGH : LOW);   // coil OFF → NC hidup → maglock berkunci
+}
+
+void relayUnlock() {
+  digitalWrite(PIN_RELAY, RELAY_ACTIVE_LOW ? LOW : HIGH);   // coil ON  → NC putus → maglock terbuka
+}
+
 void unlockDoor() {
-  // Maglock jenis fail-safe: relay ON = potong kuasa maglock = pintu TERBUKA.
-  // Wiring: kuasa maglock melalui terminal NC relay. Kalau terbalik, tukar
-  // HIGH/LOW di sini.
-  digitalWrite(PIN_RELAY, HIGH);
+  // Maglock fail-safe: kuasa melalui terminal NC channel 1.
+  // Relay ON = potong kuasa = pintu TERBUKA 5 saat, kemudian berkunci semula.
+  relayUnlock();
   delay(UNLOCK_MS);
-  digitalWrite(PIN_RELAY, LOW);
+  relayLock();
 }
 
 bool wifiReady() {
@@ -303,7 +314,7 @@ void setup() {
   pinMode(PIN_BUZZER_COUNTER, OUTPUT);
   pinMode(PIN_DOOR, INPUT_PULLUP);
   pinMode(PIN_EXIT_BTN, INPUT_PULLUP);
-  digitalWrite(PIN_RELAY, LOW);
+  relayLock();
   buzzersWrite(LOW);
 
   lcd.init();
