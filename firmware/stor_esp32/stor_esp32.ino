@@ -6,9 +6,10 @@
  * Fungsi:
  *   1. Imbas kad RFID -> hantar ke app -> buka pintu maglock kalau berdaftar
  *   2. LCD papar nama staff + timer submit
- *   3. Buzzer berbunyi kalau timer tamat tapi staff belum submit dalam app
- *   4. Sensor pintu (reed switch) -> beritahu app bila pintu ditutup
- *   5. Butang EXIT di dalam stor -> buka pintu bila-bila masa (keselamatan)
+ *   3. DUA buzzer berbunyi sekali (pintu stor + kaunter) kalau timer tamat
+ *      tapi staff belum submit dalam app
+ *   4. Butang 1 / sensor pintu -> beritahu app bila pintu ditutup
+ *   5. Butang 2 EXIT di dalam stor -> buka pintu (admin / kecemasan)
  *   6. Mod offline: kalau WiFi putus, kad dalam senarai OFFLINE_CARDS tetap
  *      boleh buka pintu
  *
@@ -59,10 +60,11 @@ const int OFFLINE_CARDS_COUNT = 0;  // tukar ikut bilangan kad di atas
 #define PIN_LCD_SDA    21
 #define PIN_LCD_SCL    22
 // Lain-lain
-#define PIN_RELAY      26   // relay maglock
-#define PIN_BUZZER     27
-#define PIN_DOOR       25   // reed switch (INPUT_PULLUP, LOW = pintu tutup)
-#define PIN_EXIT_BTN   32   // butang exit dalam stor (INPUT_PULLUP, LOW = ditekan)
+#define PIN_RELAY           26   // relay maglock
+#define PIN_BUZZER_STOR     27   // buzzer di pintu stor
+#define PIN_BUZZER_COUNTER  14   // buzzer di kaunter (berbunyi sama masa)
+#define PIN_DOOR            25   // Butang 1 / reed switch (INPUT_PULLUP, LOW = pintu tutup)
+#define PIN_EXIT_BTN        32   // Butang 2 EXIT dalam stor (INPUT_PULLUP, LOW = ditekan)
 
 // ===================== TETAPAN MASA =========================================
 const unsigned long UNLOCK_MS       = 5000;   // maglock terbuka 5 saat
@@ -92,10 +94,15 @@ void lcdMsg(const String& line1, const String& line2 = "") {
   lcd.setCursor(0, 1); lcd.print(line2.substring(0, 16));
 }
 
+void buzzersWrite(int level) {
+  digitalWrite(PIN_BUZZER_STOR, level);
+  digitalWrite(PIN_BUZZER_COUNTER, level);
+}
+
 void beep(int times, int onMs = 100, int offMs = 100) {
   for (int i = 0; i < times; i++) {
-    digitalWrite(PIN_BUZZER, HIGH); delay(onMs);
-    digitalWrite(PIN_BUZZER, LOW);  if (i < times - 1) delay(offMs);
+    buzzersWrite(HIGH); delay(onMs);
+    buzzersWrite(LOW);  if (i < times - 1) delay(offMs);
   }
 }
 
@@ -231,7 +238,7 @@ void handleDoor() {
     if (closed) {
       sessionActive = false;
       alarmOn = false;
-      digitalWrite(PIN_BUZZER, LOW);
+      buzzersWrite(LOW);
       lcdMsg("Pintu ditutup", "Terima kasih!");
       delay(1500);
       lcdMsg("Imbas kad anda", "");
@@ -265,7 +272,7 @@ void handleSessionTimer() {
           // Tiada sesi "open" -> staff sudah submit / sesi ditutup
           sessionActive = false;
           alarmOn = false;
-          digitalWrite(PIN_BUZZER, LOW);
+          buzzersWrite(LOW);
           lcdMsg("Imbas kad anda", "");
           return;
         }
@@ -281,7 +288,7 @@ void handleSessionTimer() {
     if (millis() - lastBeep > 2000) {
       lastBeep = millis();
       beepState = !beepState;
-      digitalWrite(PIN_BUZZER, beepState ? HIGH : LOW);
+      buzzersWrite(beepState ? HIGH : LOW);
     }
     lcdMsg("SILA SUBMIT", "dalam app!");
   }
@@ -292,11 +299,12 @@ void setup() {
   Serial.begin(115200);
 
   pinMode(PIN_RELAY, OUTPUT);
-  pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(PIN_BUZZER_STOR, OUTPUT);
+  pinMode(PIN_BUZZER_COUNTER, OUTPUT);
   pinMode(PIN_DOOR, INPUT_PULLUP);
   pinMode(PIN_EXIT_BTN, INPUT_PULLUP);
   digitalWrite(PIN_RELAY, LOW);
-  digitalWrite(PIN_BUZZER, LOW);
+  buzzersWrite(LOW);
 
   lcd.init();
   lcd.backlight();

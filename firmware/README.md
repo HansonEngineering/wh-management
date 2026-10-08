@@ -2,7 +2,7 @@
 
 Dua peranti ESP32. Kod sedia ada dalam folder masing-masing:
 
-- `stor_esp32/stor_esp32.ino` — Pintu stor (RFID + maglock + buzzer + sensor pintu + LCD 1602)
+- `stor_esp32/stor_esp32.ino` — Pintu stor (RFID + maglock + 2 buzzer + 2 butang + LCD 1602)
 - `kehadiran_esp32/kehadiran_esp32.ino` — Kehadiran (thumbprint + LCD 2004 + buzzer)
 
 ---
@@ -64,30 +64,38 @@ terbuka (pintu tidak terkunci semasa blackout). Ini yang dimahukan.
 > (mod VCC biasa). Kalau relay tidak trigger dengan isyarat 3.3V,
 > beli modul relay bertanda "3.3V trigger" atau "optocoupler low-level trigger".
 
-### A4. Buzzer aktif → ESP32
+### A4. Dua buzzer aktif → ESP32 (berbunyi sama masa)
 
-| Pin Buzzer | Sambung ke |
-|---|---|
-| + (kaki panjang) | GPIO 27 |
-| − | GND |
+Kod akan hidupkan **dua-dua** GPIO sekali — tidak perlu expansion board tambahan.
 
-*(Guna buzzer aktif 3.3V–5V jenis kecil. Kalau bunyi lemah, perlu transistor NPN — tanya saya nanti.)*
+| Buzzer | Pin + | Pin − |
+|---|---|---|
+| Buzzer 1 — di pintu stor | GPIO 27 | GND |
+| Buzzer 2 — di kaunter | GPIO 14 | GND |
 
-### A5. Reed switch (sensor pintu) → ESP32
+Guna buzzer aktif 3.3V–5V. Kalau buzzer kaunter jauh (>10 m) dan bunyi lemah, sambung GPIO 14 ke modul relay kecil, kemudian relay hidupkan buzzer 5V/12V di kaunter.
 
-| Kaki reed switch | Sambung ke |
+**Tidak perlu expansion board kedua.** ESP32 ada pin cukup. Expansion board yang kau sudah ada hanya memudahkan wiring (skru terminal) — guna dia untuk GPIO 14/25/27/32.
+
+### A5. Butang 1 — sensor pintu tutup → ESP32
+
+Sama ada reed switch magnet ATAU butang/limit switch mekanikal:
+
+| Kaki | Sambung ke |
 |---|---|
 | Kaki 1 | GPIO 25 |
 | Kaki 2 | GND |
 
-Pasang magnet di pintu, reed switch di bingkai pintu. Tiada polarity — boleh terbalik.
+Kod: `LOW` = pintu **tutup**. Kalau terbalik (buzzer/app salah baca), tukar wiring atau beritahu saya.
 
-### A6. Butang EXIT (dalam stor) → ESP32
+### A6. Butang 2 — EXIT / admin buka dari dalam → ESP32
 
 | Kaki butang | Sambung ke |
 |---|---|
 | Kaki 1 | GPIO 32 |
 | Kaki 2 | GND |
+
+Tekan = maglock terbuka 5 saat. Berfungsi walau WiFi putus (keselamatan).
 
 ### A7. Bekalan kuasa keseluruhan (Stor)
 
@@ -161,9 +169,10 @@ ESP32 melalui USB 5V atau adapter 5V ke pin VIN. Semua komponen lain
 | RFID RC522 MISO | GPIO 19 |
 | RFID RC522 RST | GPIO 33 |
 | Relay maglock | GPIO 26 |
-| Buzzer | GPIO 27 |
-| Reed switch pintu | GPIO 25 (INPUT_PULLUP) |
-| Butang EXIT (dalam stor) | GPIO 32 (INPUT_PULLUP) |
+| Buzzer pintu stor | GPIO 27 |
+| Buzzer kaunter | GPIO 14 |
+| Butang 1 — sensor pintu | GPIO 25 (INPUT_PULLUP) |
+| Butang 2 — EXIT dalam stor | GPIO 32 (INPUT_PULLUP) |
 | LCD I2C SDA | GPIO 21 |
 | LCD I2C SCL | GPIO 22 |
 
@@ -172,8 +181,8 @@ ESP32 melalui USB 5V atau adapter 5V ke pin VIN. Semua komponen lain
 1. Imbas kad → POST `/api/stor/open` dengan `rfid_uid` + header `x-device-key`.
 2. Kalau OK: maglock terbuka 5 saat, LCD papar nama staff, timer mula.
 3. ESP32 poll `/api/stor/session` setiap 5 saat — bila staff submit dalam app, timer berhenti.
-4. Kalau timer tamat dan belum submit: buzzer berbunyi berulang.
-5. Reed switch kesan pintu tutup → POST `/api/stor/door` dengan `{"closed": true}`.
+4. Kalau timer tamat dan belum submit: **dua buzzer** (stor + kaunter) berbunyi berulang.
+5. Butang 1 kesan pintu tutup → POST `/api/stor/door` dengan `{"closed": true}`.
 6. Butang EXIT dalam stor → buka maglock serta-merta (keselamatan, tanpa internet).
 7. WiFi putus → kad dalam senarai `OFFLINE_CARDS` tetap boleh buka pintu.
 
