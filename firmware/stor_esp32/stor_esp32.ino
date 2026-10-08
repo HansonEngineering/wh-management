@@ -188,6 +188,7 @@ bool isOfflineCardAllowed(const String& uid) {
 }
 
 void handleCard(const String& uid) {
+  Serial.println("RFID UID: " + uid);
   lcdMsg("Mengesahkan...", uid);
 
   String resp;
@@ -211,7 +212,7 @@ void handleCard(const String& uid) {
 
   if (code == 403) {
     beep(3);
-    lcdMsg("Kad tidak", "berdaftar!");
+    lcdMsg("Tidak berdaftar", uid);  // papar UID supaya boleh copy ke app
   } else if (code == 409) {
     JsonDocument doc;
     deserializeJson(doc, resp);
