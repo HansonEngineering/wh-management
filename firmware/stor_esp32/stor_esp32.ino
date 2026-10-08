@@ -91,6 +91,7 @@ bool beepState = false;
 int lastDoorState = HIGH;
 unsigned long lastDoorChange = 0;
 unsigned long lastHeartbeat = 0;
+bool rfidOk = false;
 
 // ===================== UTILITI ==============================================
 void lcdMsg(const String& line1, const String& line2 = "") {
@@ -235,7 +236,7 @@ void handleCard(const String& uid) {
     }
   }
   delay(2000);
-  lcdMsg("Imbas kad anda", "");
+  showIdleScreen();
 }
 
 // ===================== LOGIK PINTU ==========================================
@@ -254,7 +255,7 @@ void handleDoor() {
       buzzersWrite(LOW);
       lcdMsg("Pintu ditutup", "Terima kasih!");
       delay(1500);
-      lcdMsg("Imbas kad anda", "");
+      showIdleScreen();
     }
   }
 }
@@ -265,7 +266,7 @@ void handleExitButton() {
     lastPress = millis();
     lcdMsg("EXIT dibuka", "");
     unlockDoor();
-    lcdMsg("Imbas kad anda", "");
+    showIdleScreen();
   }
 }
 
@@ -286,7 +287,7 @@ void handleSessionTimer() {
           sessionActive = false;
           alarmOn = false;
           buzzersWrite(LOW);
-          lcdMsg("Imbas kad anda", "");
+          showIdleScreen();
           return;
         }
       }
@@ -327,7 +328,8 @@ void setup() {
 
   lcd.init();
   lcd.backlight();
-  lcdMsg("WH Management", "Memulakan...");
+  lcdMsg("WH Management", "STOR ESP32");
+  delay(2000);
 
   SPI.begin(PIN_RFID_SCK, PIN_RFID_MISO, PIN_RFID_MOSI, PIN_RFID_SS);
   rfid.PCD_Init();
@@ -335,17 +337,21 @@ void setup() {
   byte ver = rfid.PCD_ReadRegister(MFRC522::VersionReg);
   Serial.print("RFID RC522 versi: 0x");
   Serial.println(ver, HEX);
-  if (ver == 0x00 || ver == 0xFF) {
+  rfidOk = !(ver == 0x00 || ver == 0xFF);
+  if (!rfidOk) {
     Serial.println("RFID TIDAK DIKESAN — semak wiring 3.3V / SDA / SCK / MOSI / MISO / RST");
-    lcdMsg("RFID GAGAL", "Semak wiring");
+    lcdMsg("RFID RC522", "GAGAL 0x" + String(ver, HEX));
   } else {
     Serial.println("RFID OK. Imbas kad sekarang.");
+    lcdMsg("RFID RC522", "OK 0x" + String(ver, HEX));
   }
+  delay(2500);
 
   secureClient.setInsecure();  // terima sijil HTTPS tanpa semakan (mudah untuk hotel)
 
   Serial.print("Menyambung WiFi: ");
   Serial.println(WIFI_SSID);
+  lcdMsg("Menyambung WiFi", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   unsigned long start = millis();
@@ -362,10 +368,17 @@ void setup() {
     Serial.println("WiFi GAGAL. Mod offline.");
     lcdMsg("WiFi GAGAL", "Mod offline");
   }
-  delay(1500);
+  delay(2500);
   beep(1);
-  lcdMsg("Imbas kad anda", "");
+  showIdleScreen();
   Serial.println("Sedia. Imbas kad pada RC522...");
+}
+
+void showIdleScreen() {
+  String line2 = "WiFi GAGAL";
+  if (WiFi.status() == WL_CONNECTED) line2 = WiFi.localIP().toString();
+  else if (!rfidOk) line2 = "RFID GAGAL";
+  lcdMsg("Imbas kad anda", line2);
 }
 
 void loop() {
