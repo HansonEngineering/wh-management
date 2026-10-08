@@ -326,6 +326,20 @@ void setup() {
   relayLock();
   buzzersWrite(LOW);
 
+  Wire.begin(PIN_LCD_SDA, PIN_LCD_SCL);
+  delay(100);
+  Serial.println("Imbas I2C (LCD patut 0x27 atau 0x3F):");
+  int i2cFound = 0;
+  for (byte a = 1; a < 127; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) {
+      Serial.print("  jumpa 0x");
+      Serial.println(a, HEX);
+      i2cFound++;
+    }
+  }
+  if (i2cFound == 0) Serial.println("  TIADA peranti I2C — LCD tidak dikesan (wiring/kuasa/alamat)");
+
   lcd.init();
   lcd.backlight();
   lcdMsg("WH Management", "STOR ESP32");
