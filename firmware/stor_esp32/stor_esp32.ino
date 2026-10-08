@@ -90,6 +90,7 @@ unsigned long lastBeep = 0;
 bool beepState = false;
 int lastDoorState = HIGH;
 unsigned long lastDoorChange = 0;
+unsigned long lastHeartbeat = 0;
 
 // ===================== UTILITI ==============================================
 void lcdMsg(const String& line1, const String& line2 = "") {
@@ -309,6 +310,12 @@ void handleSessionTimer() {
 // ===================== SETUP & LOOP =========================================
 void setup() {
   Serial.begin(115200);
+  delay(1500);  // beri masa USB Serial Monitor buka
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("WH Management STOR — ESP32");
+  Serial.println("Kalau kau nampak ayat ni, Serial OK");
+  Serial.println("================================");
 
   pinMode(PIN_RELAY, OUTPUT);
   pinMode(PIN_BUZZER_STOR, OUTPUT);
@@ -324,23 +331,41 @@ void setup() {
 
   SPI.begin(PIN_RFID_SCK, PIN_RFID_MISO, PIN_RFID_MOSI, PIN_RFID_SS);
   rfid.PCD_Init();
+  delay(50);
+  byte ver = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+  Serial.print("RFID RC522 versi: 0x");
+  Serial.println(ver, HEX);
+  if (ver == 0x00 || ver == 0xFF) {
+    Serial.println("RFID TIDAK DIKESAN — semak wiring 3.3V / SDA / SCK / MOSI / MISO / RST");
+    lcdMsg("RFID GAGAL", "Semak wiring");
+  } else {
+    Serial.println("RFID OK. Imbas kad sekarang.");
+  }
 
   secureClient.setInsecure();  // terima sijil HTTPS tanpa semakan (mudah untuk hotel)
 
+  Serial.print("Menyambung WiFi: ");
+  Serial.println(WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
     delay(300);
+    Serial.print(".");
   }
+  Serial.println();
   if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("WiFi OK. IP: ");
+    Serial.println(WiFi.localIP());
     lcdMsg("WiFi OK", WiFi.localIP().toString());
   } else {
+    Serial.println("WiFi GAGAL. Mod offline.");
     lcdMsg("WiFi GAGAL", "Mod offline");
   }
   delay(1500);
   beep(1);
   lcdMsg("Imbas kad anda", "");
+  Serial.println("Sedia. Imbas kad pada RC522...");
 }
 
 void loop() {
@@ -349,5 +374,9 @@ void loop() {
   handleDoor();
   handleExitButton();
   handleSessionTimer();
+  if (millis() - lastHeartbeat > 5000) {
+    lastHeartbeat = millis();
+    Serial.println("Menunggu kad... (imbas sekarang)");
+  }
   delay(100);
 }
