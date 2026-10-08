@@ -20,6 +20,9 @@ const CONFIG = {
   EXELY_CLIENT_ID: "api_connection_04e9c_51649927b1",
   EXELY_CLIENT_SECRET: "8fZJL8Lajot2RWW3fzlWGIMKaLsiAOnd",
   EXELY_PROPERTY_ID: "503620", // WARISAN HOTEL
+  // Integration key (Property management > Settings > Integrations) TIDAK diperlukan
+  // untuk PMS Universal API V2 — OAuth JWT sudah cukup. Kunci tu untuk partner
+  // (Roomsing/SkyBiz), bukan untuk Apps Script kita.
   // Masa semakan harian (24 jam, waktu Malaysia)
   DAILY_CHECK_HOUR: 23,
   DAILY_CHECK_MINUTE: 30,
@@ -113,7 +116,7 @@ function exelyToken() {
 //
 // Dua peringkat:
 // 1) PMS API (utama) — ada nombor bilik fizikal (roomId -> displayName).
-//    PERINGATAN: perlu diaktifkan oleh Exely support ("Access to Exely PMS External API").
+//    Exely sudah provision backend; /rooms dan /reservations/* hidup (HTTP 200).
 // 2) Read Reservation API (sandaran) — tiada nombor bilik, hanya jenis bilik.
 //    Bilik hanya diisi jika TEPAT SATU bilik padan dengan jenis bilik itu.
 function fetchTodayCheckouts() {
@@ -140,51 +143,82 @@ function fetchTodayCheckouts() {
 
 // PMS API: cari tempahan aktif yang menjejaskan hari ini, tapis checkOutDateTime == hari ini.
 // Pulang null jika API gagal (supaya sandaran digunakan).
+// NOTA: /reservations/search pulangkan NOMBOR sahaja — detail di-fetch satu-satu.
 function fetchCheckoutsViaPmsApi_(token, today) {
   const base = "https://connect.hopenapi.com/api/pms/v2/properties/" + CONFIG.EXELY_PROPERTY_ID;
+  const headers = { Authorization: "Bearer " + token };
 
-  // Peta roomId -> displayName (nombor bilik)
-  const roomsRes = UrlFetchApp.fetch(base + "/rooms?maxPageSize=100", {
-    headers: { Authorization: "Bearer " + token },
-    muteHttpExceptions: true,
-  });
-  if (roomsRes.getResponseCode() !== 200) {
-    console.warn("PMS /rooms status " + roomsRes.getResponseCode());
-    return null;
+  // 1. Peta roomId -> displayName (nombor bilik), dengan cache 6 jam
+  const cache = CacheService.getScriptCache();
+  let roomNameById = {};
+  const cachedRooms = cache.get("pms_rooms");
+  if (cachedRooms) {
+    roomNameById = JSON.parse(cachedRooms);
+  } else {
+    let pageToken = "";
+    do {
+      const roomsRes = UrlFetchApp.fetch(base + "/rooms?maxPageSize=100" + (pageToken ? "&pageToken=" + encodeURIComponent(pageToken) : ""), {
+        headers: headers, muteHttpExceptions: true,
+      });
+      if (roomsRes.getResponseCode() !== 200) {
+        console.warn("PMS /rooms status " + roomsRes.getResponseCode());
+        return null;
+      }
+      const roomsJson = JSON.parse(roomsRes.getContentText());
+      (roomsJson.rooms || []).forEach((r) => (roomNameById[r.id] = r.displayName));
+      pageToken = roomsJson.hasNextPage ? roomsJson.nextPageToken : "";
+    } while (pageToken);
+    try { cache.put("pms_rooms", JSON.stringify(roomNameById), 21600); } catch (e) { /* cache gagal pun OK */ }
   }
-  const roomsJson = JSON.parse(roomsRes.getContentText());
-  const roomNameById = {};
-  (roomsJson.rooms || []).forEach((r) => (roomNameById[r.id] = r.displayName));
 
-  // Cari tempahan yang stay-nya menyentuh hari ini
-  const url = base + "/reservations/search?state=Active" +
-    "&startAffectPeriodDateTime=" + today + "T00:00" +
-    "&endAffectPeriodDateTime=" + today + "T23:59" +
-    "&maxPageSize=100";
-  const res = UrlFetchApp.fetch(url, {
-    headers: { Authorization: "Bearer " + token },
-    muteHttpExceptions: true,
-  });
-  if (res.getResponseCode() !== 200) {
-    console.warn("PMS reservations/search status " + res.getResponseCode());
-    return null;
-  }
-  const json = JSON.parse(res.getContentText());
+  // 2. Cari tempahan yang stay-nya menyentuh hari ini (pulang nombor sahaja)
+  const numbers = [];
+  let pageToken = "";
+  do {
+    const url = base + "/reservations/search?state=Active" +
+      "&startAffectPeriodDateTime=" + today + "T00:00" +
+      "&endAffectPeriodDateTime=" + today + "T23:59" +
+      "&maxPageSize=100" + (pageToken ? "&pageToken=" + encodeURIComponent(pageToken) : "");
+    const res = UrlFetchApp.fetch(url, { headers: headers, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) {
+      console.warn("PMS reservations/search status " + res.getResponseCode());
+      return null;
+    }
+    const json = JSON.parse(res.getContentText());
+    (json.reservations || []).forEach((r) => numbers.push(r.number));
+    pageToken = json.hasNextPage ? json.nextPageToken : "";
+  } while (pageToken);
+
+  // 3. Fetch detail secara berkelompok (UrlFetchApp.fetchAll) — elak timeout
   const out = [];
-  (json.reservations || []).forEach((rv) => {
-    const guestName = rv.customer ? String(rv.customer).trim() : "";
-    (rv.roomStays || []).forEach((rs) => {
-      const co = String(rs.actualCheckOutDateTime || rs.checkOutDateTime || "");
-      if (co.slice(0, 10) !== today) return;
-      const roomNumber = roomNameById[rs.roomId] || "";
-      out.push({
-        roomNumber: roomNumber,
-        roomTypeName: "",
-        guestName: guestName,
-        bookingNumber: rv.number || "",
+  const CHUNK = 20;
+  for (let i = 0; i < numbers.length; i += CHUNK) {
+    const chunk = numbers.slice(i, i + CHUNK);
+    const reqs = chunk.map((num) => ({
+      url: base + "/reservations/" + encodeURIComponent(num),
+      headers: headers,
+      muteHttpExceptions: true,
+    }));
+    const responses = UrlFetchApp.fetchAll(reqs);
+    responses.forEach((detRes, idx) => {
+      if (detRes.getResponseCode() !== 200) return;
+      const det = JSON.parse(detRes.getContentText());
+      const rv = det.reservation || det;
+      const pn = (rv.customer && rv.customer.personName) || {};
+      const guestName = [pn.firstName, pn.lastName].filter((s) => s && s !== ".").join(" ").trim();
+      (rv.roomStays || []).forEach((rs) => {
+        // Hanya bilik yang SUDAH check-out sebenar hari ini (bukan jadual semata-mata)
+        const co = String(rs.actualCheckOutDateTime || "");
+        if (co.slice(0, 10) !== today) return;
+        out.push({
+          roomNumber: roomNameById[String(rs.roomId)] || "",
+          roomTypeName: "",
+          guestName: guestName,
+          bookingNumber: rv.number || chunk[idx],
+        });
       });
     });
-  });
+  }
   return out;
 }
 
@@ -399,8 +433,9 @@ function setupTriggers() {
   // Padam trigger lama
   ScriptApp.getProjectTriggers().forEach((t) => ScriptApp.deleteTrigger(t));
 
-  // Sync Exely setiap 5 minit
-  ScriptApp.newTrigger("syncExelyCheckouts").timeBased().everyMinutes(5).create();
+  // Sync Exely setiap 15 minit (setiap sync membuat beberapa panggilan API —
+  // 15 minit mengimbangi kepantasan dan kuota UrlFetch harian Google)
+  ScriptApp.newTrigger("syncExelyCheckouts").timeBased().everyMinutes(15).create();
 
   // Semakan harian + tandakan tidak hadir
   ScriptApp.newTrigger("dailyStockCheck").timeBased().atHour(CONFIG.DAILY_CHECK_HOUR).nearMinute(CONFIG.DAILY_CHECK_MINUTE).everyDays(1).create();
