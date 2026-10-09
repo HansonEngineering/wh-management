@@ -88,8 +88,10 @@ unsigned long sessionDeadline = 0;    // masa submit_deadline (millis anggaran)
 unsigned long lastPoll = 0;
 unsigned long lastWifiTry = 0;
 bool alarmOn = false;
-unsigned long lastBeep = 0;
-bool beepState = false;
+bool sirenOn = false;
+bool sirenHigh = false;
+unsigned long lastSirenFlip = 0;
+bool waitingStorFree = false;
 int lastDoorState = HIGH;
 unsigned long lastDoorChange = 0;
 unsigned long lastHeartbeat = 0;
@@ -114,23 +116,69 @@ void buzzersInit() {
 #endif
 }
 
-void buzzersWrite(int level) {
-  // Buzzer pasif perlukan gelombang PWM, bukan HIGH/LOW biasa
-  int duty = (level == HIGH) ? 128 : 0;
+void buzzersTone(int freq) {
+  if (freq <= 0) {
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcWrite(PIN_BUZZER_STOR, duty);
-  ledcWrite(PIN_BUZZER_COUNTER, duty);
+    ledcWrite(PIN_BUZZER_STOR, 0);
+    ledcWrite(PIN_BUZZER_COUNTER, 0);
 #else
-  ledcWrite(0, duty);
-  ledcWrite(1, duty);
+    ledcWriteTone(0, 0);
+    ledcWriteTone(1, 0);
+#endif
+    return;
+  }
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcChangeFrequency(PIN_BUZZER_STOR, freq, BUZZ_RES);
+  ledcChangeFrequency(PIN_BUZZER_COUNTER, freq, BUZZ_RES);
+  ledcWrite(PIN_BUZZER_STOR, 128);
+  ledcWrite(PIN_BUZZER_COUNTER, 128);
+#else
+  ledcWriteTone(0, freq);
+  ledcWriteTone(1, freq);
 #endif
 }
 
-void beep(int times, int onMs = 100, int offMs = 100) {
-  for (int i = 0; i < times; i++) {
-    buzzersWrite(HIGH); delay(onMs);
-    buzzersWrite(LOW);  if (i < times - 1) delay(offMs);
+void stopSiren() {
+  sirenOn = false;
+  alarmOn = false;
+  waitingStorFree = false;
+  buzzersTone(0);
+}
+
+void startSiren() {
+  sirenOn = true;
+  sirenHigh = true;
+  lastSirenFlip = millis();
+  buzzersTone(2400);  // mula "nii"
+}
+
+// 1) Kad dikenali: tiiiiit 1 saat
+void playOkBeep() {
+  stopSiren();
+  buzzersTone(2700);
+  delay(1000);
+  buzzersTone(0);
+}
+
+// 2) Kad tidak dikenali: titititit 2 saat
+void playDeniedBeep() {
+  stopSiren();
+  unsigned long endAt = millis() + 2000;
+  while (millis() < endAt) {
+    buzzersTone(3200);
+    delay(70);
+    buzzersTone(0);
+    delay(70);
   }
+}
+
+// 3) Error: nii-noo sampai error hilang (dipanggil dari loop)
+void handleSiren() {
+  if (!sirenOn) return;
+  if (millis() - lastSirenFlip < 350) return;
+  lastSirenFlip = millis();
+  sirenHigh = !sirenHigh;
+  buzzersTone(sirenHigh ? 2400 : 1600);
 }
 
 void relayLock() {
@@ -212,6 +260,7 @@ bool isOfflineCardAllowed(const String& uid) {
 
 void handleCard(const String& uid) {
   Serial.println("RFID UID: " + uid);
+  stopSiren();
   lcdMsg("Mengesahkan...", uid);
 
   String resp;
@@ -225,8 +274,7 @@ void handleCard(const String& uid) {
       int timerMin = doc["timer_minutes"] | 5;
       sessionActive = true;
       sessionDeadline = millis() + (unsigned long)timerMin * 60UL * 1000UL;
-      alarmOn = false;
-      beep(1);
+      playOkBeep();
       lcdMsg("Selamat masuk:", name);
       unlockDoor();
       return;
@@ -234,30 +282,37 @@ void handleCard(const String& uid) {
   }
 
   if (code == 403) {
-    beep(3);
-    lcdMsg("Tidak berdaftar", uid);  // papar UID supaya boleh copy ke app
-  } else if (code == 409) {
+    lcdMsg("Tidak berdaftar", uid);
+    playDeniedBeep();
+    showIdleScreen();
+    return;
+  }
+
+  if (code == 409) {
     JsonDocument doc;
     deserializeJson(doc, resp);
     String blockedBy = doc["blocked_by"] | "staff lain";
-    beep(2);
     lcdMsg("Stor digunakan:", blockedBy);
-  } else if (code == 401) {
-    beep(3);
-    lcdMsg("Ralat kunci", "peranti (401)");
-  } else {
-    // WiFi putus / server tidak sampai -> mod offline
-    if (isOfflineCardAllowed(uid)) {
-      beep(1);
-      lcdMsg("MOD OFFLINE", "Pintu dibuka");
-      unlockDoor();
-    } else {
-      beep(3);
-      lcdMsg("Tiada sambungan", "Cuba lagi");
-    }
+    waitingStorFree = true;
+    startSiren();
+    return;
   }
-  delay(2000);
-  showIdleScreen();
+
+  if (code == 401) {
+    lcdMsg("Ralat kunci", "peranti (401)");
+    startSiren();
+    return;
+  }
+
+  if (isOfflineCardAllowed(uid)) {
+    lcdMsg("MOD OFFLINE", "Pintu dibuka");
+    playOkBeep();
+    unlockDoor();
+    return;
+  }
+
+  lcdMsg("Tiada sambungan", "Cuba lagi");
+  startSiren();
 }
 
 // ===================== LOGIK PINTU ==========================================
@@ -272,8 +327,7 @@ void handleDoor() {
     postJson("/api/stor/door", body, resp);
     if (closed) {
       sessionActive = false;
-      alarmOn = false;
-      buzzersWrite(LOW);
+      stopSiren();
       lcdMsg("Pintu ditutup", "Terima kasih!");
       delay(1500);
       showIdleScreen();
@@ -304,10 +358,8 @@ void handleSessionTimer() {
       JsonDocument doc;
       if (deserializeJson(doc, resp) == DeserializationError::Ok) {
         if (doc["session"].isNull()) {
-          // Tiada sesi "open" -> staff sudah submit / sesi ditutup
           sessionActive = false;
-          alarmOn = false;
-          buzzersWrite(LOW);
+          stopSiren();
           showIdleScreen();
           return;
         }
@@ -315,17 +367,25 @@ void handleSessionTimer() {
     }
   }
 
-  // Tamat masa tapi belum submit -> buzzer berulang
-  if (millis() > sessionDeadline) {
+  if (millis() > sessionDeadline && !alarmOn) {
     alarmOn = true;
-  }
-  if (alarmOn) {
-    if (millis() - lastBeep > 2000) {
-      lastBeep = millis();
-      beepState = !beepState;
-      buzzersWrite(beepState ? HIGH : LOW);
-    }
+    startSiren();
     lcdMsg("SILA SUBMIT", "dalam app!");
+  }
+}
+
+void pollStorFree() {
+  if (!waitingStorFree) return;
+  if (millis() - lastPoll < POLL_SESSION_MS) return;
+  lastPoll = millis();
+  String resp;
+  int code = getJson("/api/stor/session", resp);
+  if (code != 200) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, resp) != DeserializationError::Ok) return;
+  if (doc["session"].isNull()) {
+    stopSiren();
+    showIdleScreen();
   }
 }
 
@@ -344,7 +404,7 @@ void setup() {
   pinMode(PIN_EXIT_BTN, INPUT_PULLUP);
   relayLock();
   buzzersInit();
-  buzzersWrite(LOW);
+  buzzersTone(0);
 
   Wire.begin(PIN_LCD_SDA, PIN_LCD_SCL);
   delay(100);
@@ -403,7 +463,7 @@ void setup() {
     lcdMsg("WiFi GAGAL", "Mod offline");
   }
   delay(2500);
-  beep(1);
+  playOkBeep();
   showIdleScreen();
   Serial.println("Sedia. Imbas kad pada RC522...");
 }
@@ -421,9 +481,11 @@ void loop() {
   handleDoor();
   handleExitButton();
   handleSessionTimer();
+  pollStorFree();
+  handleSiren();
   if (millis() - lastHeartbeat > 5000) {
     lastHeartbeat = millis();
     Serial.println("Menunggu kad... (imbas sekarang)");
   }
-  delay(100);
+  delay(20);
 }
