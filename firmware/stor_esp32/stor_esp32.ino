@@ -96,6 +96,15 @@ int lastDoorState = HIGH;
 unsigned long lastDoorChange = 0;
 unsigned long lastHeartbeat = 0;
 bool rfidOk = false;
+unsigned long unlockUntil = 0;
+unsigned long beepUntil = 0;
+unsigned long lastCardMs = 0;
+String lastCardUid = "";
+
+#define CACHE_MAX 40
+String cacheUid[CACHE_MAX];
+String cacheName[CACHE_MAX];
+int cacheCount = 0;
 
 // ===================== UTILITI ==============================================
 void lcdMsg(const String& line1, const String& line2 = "") {
@@ -152,12 +161,71 @@ void startSiren() {
   buzzersTone(2400);  // mula "nii"
 }
 
-// 1) Kad dikenali: tiiiiit 1 saat
-void playOkBeep() {
+void startOkBeep() {
   stopSiren();
   buzzersTone(2700);
-  delay(1000);
-  buzzersTone(0);
+  beepUntil = millis() + 1000;
+}
+
+void startUnlock() {
+  relayUnlock();
+  unlockUntil = millis() + UNLOCK_MS;
+}
+
+void handleTimedOutputs() {
+  if (beepUntil && millis() >= beepUntil) {
+    beepUntil = 0;
+    if (!sirenOn) buzzersTone(0);
+  }
+  if (unlockUntil && millis() >= unlockUntil) {
+    unlockUntil = 0;
+    relayLock();
+  }
+}
+
+String compactUid(const String& u) {
+  String s = u;
+  s.toUpperCase();
+  s.replace(" ", "");
+  return s;
+}
+
+int cacheFind(const String& uid) {
+  String c = compactUid(uid);
+  for (int i = 0; i < cacheCount; i++) {
+    if (compactUid(cacheUid[i]) == c) return i;
+  }
+  return -1;
+}
+
+void cachePut(const String& uid, const String& name) {
+  int i = cacheFind(uid);
+  if (i >= 0) {
+    cacheName[i] = name;
+    return;
+  }
+  if (cacheCount >= CACHE_MAX) return;
+  cacheUid[cacheCount] = uid;
+  cacheName[cacheCount] = name;
+  cacheCount++;
+}
+
+void loadCardCache() {
+  String resp;
+  int code = getJson("/api/stor/cards", resp);
+  if (code != 200) {
+    Serial.println("Cache kad: gagal muat dari server");
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, resp) != DeserializationError::Ok || !doc["ok"]) return;
+  JsonArray arr = doc["cards"].as<JsonArray>();
+  for (JsonObject o : arr) {
+    cachePut(String((const char*)(o["rfid_uid"] | "")), String((const char*)(o["name"] | "Staff")));
+  }
+  Serial.print("Cache kad: ");
+  Serial.print(cacheCount);
+  Serial.println(" kad");
 }
 
 // 2) Kad tidak dikenali: titititit 2 saat
@@ -190,11 +258,7 @@ void relayUnlock() {
 }
 
 void unlockDoor() {
-  // Maglock fail-safe: kuasa melalui terminal NC channel 1.
-  // Relay ON = potong kuasa = pintu TERBUKA 5 saat, kemudian berkunci semula.
-  relayUnlock();
-  delay(UNLOCK_MS);
-  relayLock();
+  startUnlock();
 }
 
 bool wifiReady() {
@@ -215,7 +279,7 @@ int postJson(const char* path, const String& jsonBody, String& responseOut) {
   http.begin(secureClient, url);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("x-device-key", DEVICE_API_KEY);
-  http.setTimeout(10000);
+  http.setTimeout(5000);
   int code = http.POST(jsonBody);
   if (code > 0) responseOut = http.getString();
   http.end();
@@ -229,7 +293,7 @@ int getJson(const char* path, String& responseOut) {
   String url = String(API_BASE) + path;
   http.begin(secureClient, url);
   http.addHeader("x-device-key", DEVICE_API_KEY);
-  http.setTimeout(10000);
+  http.setTimeout(5000);
   int code = http.GET();
   if (code > 0) responseOut = http.getString();
   http.end();
@@ -258,27 +322,34 @@ bool isOfflineCardAllowed(const String& uid) {
   return false;
 }
 
-void handleCard(const String& uid) {
-  Serial.println("RFID UID: " + uid);
-  stopSiren();
-  lcdMsg("Mengesahkan...", uid);
+void grantEntry(const String& name, int timerMin) {
+  lcdMsg("Selamat masuk:", name);
+  startOkBeep();
+  startUnlock();
+  sessionActive = true;
+  sessionDeadline = millis() + (unsigned long)timerMin * 60UL * 1000UL;
+}
 
-  String resp;
-  String body = "{\"rfid_uid\":\"" + uid + "\"}";
-  int code = postJson("/api/stor/open", body, resp);
-
+void applyOpenResponse(int code, const String& resp, const String& uid, bool alreadyOpened) {
   if (code == 200) {
     JsonDocument doc;
     if (deserializeJson(doc, resp) == DeserializationError::Ok && doc["ok"]) {
       String name = doc["staff_name"] | "Staff";
       int timerMin = doc["timer_minutes"] | 5;
-      sessionActive = true;
-      sessionDeadline = millis() + (unsigned long)timerMin * 60UL * 1000UL;
-      playOkBeep();
-      lcdMsg("Selamat masuk:", name);
-      unlockDoor();
+      cachePut(uid, name);
+      if (!alreadyOpened) grantEntry(name, timerMin);
+      else {
+        sessionActive = true;
+        sessionDeadline = millis() + (unsigned long)timerMin * 60UL * 1000UL;
+      }
       return;
     }
+  }
+
+  if (alreadyOpened && (code == 409 || code == 403)) {
+    unlockUntil = 0;
+    relayLock();
+    beepUntil = 0;
   }
 
   if (code == 403) {
@@ -287,7 +358,6 @@ void handleCard(const String& uid) {
     showIdleScreen();
     return;
   }
-
   if (code == 409) {
     JsonDocument doc;
     deserializeJson(doc, resp);
@@ -297,22 +367,42 @@ void handleCard(const String& uid) {
     startSiren();
     return;
   }
-
   if (code == 401) {
     lcdMsg("Ralat kunci", "peranti (401)");
     startSiren();
     return;
   }
-
-  if (isOfflineCardAllowed(uid)) {
-    lcdMsg("MOD OFFLINE", "Pintu dibuka");
-    playOkBeep();
-    unlockDoor();
+  if (!alreadyOpened && isOfflineCardAllowed(uid)) {
+    grantEntry("Staff", 5);
     return;
   }
+  if (!alreadyOpened) {
+    lcdMsg("Tiada sambungan", "Cuba lagi");
+    startSiren();
+  }
+}
 
-  lcdMsg("Tiada sambungan", "Cuba lagi");
-  startSiren();
+void handleCard(const String& uid) {
+  Serial.println("RFID UID: " + uid);
+  if (uid == lastCardUid && millis() - lastCardMs < 2500) return;
+  lastCardUid = uid;
+  lastCardMs = millis();
+  stopSiren();
+
+  int idx = cacheFind(uid);
+  bool known = idx >= 0 || isOfflineCardAllowed(uid);
+  String cachedName = idx >= 0 ? cacheName[idx] : "Staff";
+
+  if (known) {
+    grantEntry(cachedName, 5);
+  } else {
+    lcdMsg("Mengesahkan...", uid);
+  }
+
+  String resp;
+  String body = "{\"rfid_uid\":\"" + uid + "\"}";
+  int code = postJson("/api/stor/open", body, resp);
+  applyOpenResponse(code, resp, uid, known);
 }
 
 // ===================== LOGIK PINTU ==========================================
@@ -462,8 +552,12 @@ void setup() {
     Serial.println("WiFi GAGAL. Mod offline.");
     lcdMsg("WiFi GAGAL", "Mod offline");
   }
-  delay(2500);
-  playOkBeep();
+  delay(1500);
+  if (WiFi.status() == WL_CONNECTED) {
+    lcdMsg("Muat senarai", "kad RFID...");
+    loadCardCache();
+  }
+  startOkBeep();
   showIdleScreen();
   Serial.println("Sedia. Imbas kad pada RC522...");
 }
@@ -478,6 +572,7 @@ void showIdleScreen() {
 void loop() {
   String uid = readCardUid();
   if (uid.length() > 0) handleCard(uid);
+  handleTimedOutputs();
   handleDoor();
   handleExitButton();
   handleSessionTimer();
