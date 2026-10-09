@@ -88,9 +88,7 @@ unsigned long sessionDeadline = 0;    // masa submit_deadline (millis anggaran)
 unsigned long lastPoll = 0;
 unsigned long lastWifiTry = 0;
 bool alarmOn = false;
-bool sirenOn = false;
-bool sirenHigh = false;
-unsigned long lastSirenFlip = 0;
+volatile bool sirenOn = false;
 bool waitingStorFree = false;
 int lastDoorState = HIGH;
 unsigned long lastDoorChange = 0;
@@ -151,14 +149,40 @@ void stopSiren() {
   sirenOn = false;
   alarmOn = false;
   waitingStorFree = false;
+  beepUntil = 0;
+  delay(1);
   buzzersTone(0);
 }
 
 void startSiren() {
   sirenOn = true;
-  sirenHigh = true;
-  lastSirenFlip = millis();
-  buzzersTone(2400);  // mula "nii"
+}
+
+// Task berasingan supaya nii-noo tidak tertahan masa ESP32 tunggu WiFi/server
+void sirenTask(void* /*pv*/) {
+  for (;;) {
+    if (sirenOn) {
+      buzzersTone(2400);
+      vTaskDelay(pdMS_TO_TICKS(280));
+      if (sirenOn) buzzersTone(1600);
+      vTaskDelay(pdMS_TO_TICKS(280));
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(40));
+    }
+  }
+}
+
+// Stor sedang digunakan: nii-noo 1 saat sahaja
+void playBusyBeep() {
+  stopSiren();
+  bool high = true;
+  unsigned long endAt = millis() + 1000;
+  while (millis() < endAt) {
+    buzzersTone(high ? 2400 : 1600);
+    high = !high;
+    delay(140);
+  }
+  buzzersTone(0);
 }
 
 void startOkBeep() {
@@ -238,15 +262,6 @@ void playDeniedBeep() {
     buzzersTone(0);
     delay(70);
   }
-}
-
-// 3) Error: nii-noo sampai error hilang (dipanggil dari loop)
-void handleSiren() {
-  if (!sirenOn) return;
-  if (millis() - lastSirenFlip < 350) return;
-  lastSirenFlip = millis();
-  sirenHigh = !sirenHigh;
-  buzzersTone(sirenHigh ? 2400 : 1600);
 }
 
 void relayLock() {
@@ -363,8 +378,8 @@ void applyOpenResponse(int code, const String& resp, const String& uid, bool alr
     deserializeJson(doc, resp);
     String blockedBy = doc["blocked_by"] | "staff lain";
     lcdMsg("Stor digunakan:", blockedBy);
-    waitingStorFree = true;
-    startSiren();
+    playBusyBeep();
+    showIdleScreen();
     return;
   }
   if (code == 401) {
@@ -387,6 +402,13 @@ void handleCard(const String& uid) {
   if (uid == lastCardUid && millis() - lastCardMs < 2500) return;
   lastCardUid = uid;
   lastCardMs = millis();
+
+  if (sessionActive) {
+    lcdMsg("Stor digunakan", "");
+    playBusyBeep();
+    return;
+  }
+
   stopSiren();
 
   int idx = cacheFind(uid);
@@ -495,6 +517,7 @@ void setup() {
   relayLock();
   buzzersInit();
   buzzersTone(0);
+  xTaskCreatePinnedToCore(sirenTask, "siren", 2048, NULL, 1, NULL, 1);
 
   Wire.begin(PIN_LCD_SDA, PIN_LCD_SCL);
   delay(100);
@@ -577,7 +600,6 @@ void loop() {
   handleExitButton();
   handleSessionTimer();
   pollStorFree();
-  handleSiren();
   if (millis() - lastHeartbeat > 5000) {
     lastHeartbeat = millis();
     Serial.println("Menunggu kad... (imbas sekarang)");
