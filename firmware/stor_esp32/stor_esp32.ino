@@ -61,8 +61,10 @@ const int OFFLINE_CARDS_COUNT = 0;  // tukar ikut bilangan kad di atas
 #define PIN_LCD_SCL    22
 // Lain-lain
 #define PIN_RELAY           26   // relay maglock — IN1 pada modul 4-channel
-#define PIN_BUZZER_STOR     27   // buzzer di pintu stor
-#define PIN_BUZZER_COUNTER  14   // buzzer di kaunter (berbunyi sama masa)
+#define PIN_BUZZER_STOR     27   // buzzer PASIF di pintu stor
+#define PIN_BUZZER_COUNTER  14   // buzzer PASIF di kaunter (berbunyi sama masa)
+#define BUZZ_FREQ           2700 // Hz — sesuai buzzer pasif
+#define BUZZ_RES            8
 #define PIN_DOOR            25   // Butang 1 / reed switch (INPUT_PULLUP, LOW = pintu tutup)
 #define PIN_EXIT_BTN        32   // Butang 2 EXIT dalam stor (INPUT_PULLUP, LOW = ditekan)
 
@@ -100,9 +102,28 @@ void lcdMsg(const String& line1, const String& line2 = "") {
   lcd.setCursor(0, 1); lcd.print(line2.substring(0, 16));
 }
 
+void buzzersInit() {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcAttach(PIN_BUZZER_STOR, BUZZ_FREQ, BUZZ_RES);
+  ledcAttach(PIN_BUZZER_COUNTER, BUZZ_FREQ, BUZZ_RES);
+#else
+  ledcSetup(0, BUZZ_FREQ, BUZZ_RES);
+  ledcAttachPin(PIN_BUZZER_STOR, 0);
+  ledcSetup(1, BUZZ_FREQ, BUZZ_RES);
+  ledcAttachPin(PIN_BUZZER_COUNTER, 1);
+#endif
+}
+
 void buzzersWrite(int level) {
-  digitalWrite(PIN_BUZZER_STOR, level);
-  digitalWrite(PIN_BUZZER_COUNTER, level);
+  // Buzzer pasif perlukan gelombang PWM, bukan HIGH/LOW biasa
+  int duty = (level == HIGH) ? 128 : 0;
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcWrite(PIN_BUZZER_STOR, duty);
+  ledcWrite(PIN_BUZZER_COUNTER, duty);
+#else
+  ledcWrite(0, duty);
+  ledcWrite(1, duty);
+#endif
 }
 
 void beep(int times, int onMs = 100, int offMs = 100) {
@@ -319,11 +340,10 @@ void setup() {
   Serial.println("================================");
 
   pinMode(PIN_RELAY, OUTPUT);
-  pinMode(PIN_BUZZER_STOR, OUTPUT);
-  pinMode(PIN_BUZZER_COUNTER, OUTPUT);
   pinMode(PIN_DOOR, INPUT_PULLUP);
   pinMode(PIN_EXIT_BTN, INPUT_PULLUP);
   relayLock();
+  buzzersInit();
   buzzersWrite(LOW);
 
   Wire.begin(PIN_LCD_SDA, PIN_LCD_SCL);

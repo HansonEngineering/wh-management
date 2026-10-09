@@ -70,16 +70,18 @@ Dengan NC: elektrik putus → maglock hilang kuasa → pintu TERBUKA (fail-safe)
 Kod sudah diset `RELAY_ACTIVE_LOW = true` (sesuai 4-channel Songle). Kalau
 pintu TERBUKA masa idle (patut berkunci), tukar kepada `false` dalam `stor_esp32.ino`.
 
-### A4. Dua buzzer aktif → ESP32 (berbunyi sama masa)
+### A4. Dua buzzer PASIF → ESP32 (berbunyi sama masa)
 
-Kod akan hidupkan **dua-dua** GPIO sekali.
+Kod hantar gelombang PWM 2700 Hz (bukan HIGH/LOW — sesuai buzzer pasif).
 
 | Buzzer | Pin + / terminal | Pin − |
 |---|---|---|
 | Buzzer 1 — di pintu stor | GPIO 27 / D27 | GND |
 | Buzzer 2 — di kaunter | GPIO 14 / D14 | GND |
 
-Guna buzzer aktif 3.3V–5V. Kalau buzzer kaunter jauh (>10 m) dan bunyi lemah, sambung D14 ke modul relay kecil, kemudian relay hidupkan buzzer 5V/12V di kaunter.
+Polariti: kaki bertanda **+** ke D27/D14, kaki lain ke GND. Kalau senyap, cuba terbalikkan kaki.
+
+Kalau buzzer kaunter jauh (>10 m) dan bunyi lemah, sambung D14 ke modul relay kecil, kemudian relay hidupkan buzzer 5V di kaunter.
 
 ### A5. Butang 1 — sensor pintu tutup → ESP32
 
