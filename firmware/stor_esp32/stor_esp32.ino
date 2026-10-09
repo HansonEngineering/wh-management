@@ -33,8 +33,8 @@
 // ===================== KONFIGURASI — UBAH DI SINI =====================
 
 // WiFi hotel
-const char* WIFI_SSID     = "NAMA_WIFI_HOTEL";
-const char* WIFI_PASSWORD = "PASSWORD_WIFI";
+const char* WIFI_SSID     = "Warisan 2.4GHz";
+const char* WIFI_PASSWORD = "Warisan004004";
 
 // Alamat app (Cloudflare Workers)
 const char* API_BASE = "https://wh-management.hansonglenn01.workers.dev";
