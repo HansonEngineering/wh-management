@@ -117,9 +117,14 @@ export default function StorClient({ user }: { user: SessionUser }) {
 
       {session && !session.is_mine && (
         <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-5">
-          <p className="font-medium text-amber-800">Stor sedang digunakan oleh {session.staff_name}</p>
+          <div className="flex items-center justify-between gap-3">
+            <p className="font-medium text-amber-800">Stor sedang digunakan oleh {session.staff_name}</p>
+            <span className={`rounded-lg px-3 py-1 text-sm font-mono ${secondsLeft < 60 ? "bg-red-100 text-red-700" : "bg-white"}`}>
+              {mm}:{ss}
+            </span>
+          </div>
           <p className="mt-1 text-sm text-amber-700">
-            Sila tunggu sehingga {session.staff_name} selesai mengemas kini.
+            Sila tunggu sehingga {session.staff_name} hantar data dalam app. Tutup pintu tidak menamatkan sesi.
           </p>
           {(user.role === "admin" || user.role === "supervisor") && (
             <button
@@ -135,13 +140,13 @@ export default function StorClient({ user }: { user: SessionUser }) {
       {session && session.is_mine && (
         <form onSubmit={handleSubmit} className="mt-4 rounded-2xl border border-neutral-200 bg-white p-5">
           <div className="flex items-center justify-between">
-            <h2 className="font-medium">Sesi anda sedang aktif</h2>
+            <h2 className="font-medium">Stor sedang digunakan oleh {session.staff_name}</h2>
             <span className={`rounded-lg px-3 py-1 text-sm font-mono ${secondsLeft < 60 ? "bg-red-100 text-red-700" : "bg-neutral-100"}`}>
               {mm}:{ss}
             </span>
           </div>
           <p className="mt-1 text-sm text-neutral-500">
-            Sila kemas kini sebelum tamat masa, kemudian tutup pintu stor.
+            Sila hantar dalam 5 minit. Tutup pintu tidak menamatkan sesi — hanya hantar data yang menamatkan.
           </p>
 
           <div className="mt-4 flex gap-2">

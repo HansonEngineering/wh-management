@@ -74,7 +74,7 @@ const bool RELAY_ACTIVE_LOW = true;
 
 // ===================== TETAPAN MASA =========================================
 const unsigned long UNLOCK_MS       = 5000;   // maglock terbuka 5 saat
-const unsigned long POLL_SESSION_MS = 5000;   // semak status submit setiap 5s
+const unsigned long POLL_SESSION_MS = 2000;   // semak submit setiap 2s (siren berhenti cepat)
 const unsigned long WIFI_RETRY_MS   = 10000;  // cuba semula WiFi setiap 10s
 
 // ===================== OBJEK =================================================
@@ -103,6 +103,8 @@ String lastCardUid = "";
 String cacheUid[CACHE_MAX];
 String cacheName[CACHE_MAX];
 int cacheCount = 0;
+String sessionStaffName = "";
+unsigned long lastInUseLcd = 0;
 
 // ===================== UTILITI ==============================================
 void lcdMsg(const String& line1, const String& line2 = "") {
@@ -337,12 +339,32 @@ bool isOfflineCardAllowed(const String& uid) {
   return false;
 }
 
+void showInUseScreen() {
+  if (!sessionActive) return;
+  long left = (long)sessionDeadline - (long)millis();
+  if (left < 0) left = 0;
+  int total = (int)(left / 1000);
+  char tbuf[8];
+  snprintf(tbuf, sizeof(tbuf), "%d:%02d", total / 60, total % 60);
+  String n = sessionStaffName;
+  if (n.length() > 8) n = n.substring(0, 8);
+  String line2 = n;
+  int pad = 16 - (int)n.length() - (int)strlen(tbuf);
+  if (pad < 1) pad = 1;
+  for (int i = 0; i < pad; i++) line2 += " ";
+  line2 += tbuf;
+  if (line2.length() > 16) line2 = line2.substring(0, 16);
+  if (left == 0) lcdMsg("SILA SUBMIT", line2);
+  else lcdMsg("Stor digunakan", line2);
+}
+
 void grantEntry(const String& name, int timerMin) {
-  lcdMsg("Selamat masuk:", name);
-  startOkBeep();
-  startUnlock();
+  sessionStaffName = name;
   sessionActive = true;
   sessionDeadline = millis() + (unsigned long)timerMin * 60UL * 1000UL;
+  startOkBeep();
+  startUnlock();
+  showInUseScreen();
 }
 
 void applyOpenResponse(int code, const String& resp, const String& uid, bool alreadyOpened) {
@@ -354,8 +376,10 @@ void applyOpenResponse(int code, const String& resp, const String& uid, bool alr
       cachePut(uid, name);
       if (!alreadyOpened) grantEntry(name, timerMin);
       else {
+        sessionStaffName = name;
         sessionActive = true;
         sessionDeadline = millis() + (unsigned long)timerMin * 60UL * 1000UL;
+        showInUseScreen();
       }
       return;
     }
@@ -365,6 +389,8 @@ void applyOpenResponse(int code, const String& resp, const String& uid, bool alr
     unlockUntil = 0;
     relayLock();
     beepUntil = 0;
+    sessionActive = false;
+    sessionStaffName = "";
   }
 
   if (code == 403) {
@@ -377,6 +403,8 @@ void applyOpenResponse(int code, const String& resp, const String& uid, bool alr
     JsonDocument doc;
     deserializeJson(doc, resp);
     String blockedBy = doc["blocked_by"] | "staff lain";
+    sessionActive = false;
+    sessionStaffName = "";
     lcdMsg("Stor digunakan:", blockedBy);
     playBusyBeep();
     showIdleScreen();
@@ -404,8 +432,8 @@ void handleCard(const String& uid) {
   lastCardMs = millis();
 
   if (sessionActive) {
-    lcdMsg("Stor digunakan", "");
     playBusyBeep();
+    showInUseScreen();
     return;
   }
 
@@ -437,13 +465,9 @@ void handleDoor() {
     String resp;
     String body = String("{\"closed\":") + (closed ? "true" : "false") + "}";
     postJson("/api/stor/door", body, resp);
-    if (closed) {
-      sessionActive = false;
-      stopSiren();
-      lcdMsg("Pintu ditutup", "Terima kasih!");
-      delay(1500);
-      showIdleScreen();
-    }
+    // Pintu tutup TIDAK menamatkan sesi dan TIDAK padam error.
+    // Error hanya bergantung pada submit dalam 5 minit.
+    if (sessionActive) showInUseScreen();
   }
 }
 
@@ -453,7 +477,8 @@ void handleExitButton() {
     lastPress = millis();
     lcdMsg("EXIT dibuka", "");
     unlockDoor();
-    showIdleScreen();
+    if (sessionActive) showInUseScreen();
+    else showIdleScreen();
   }
 }
 
@@ -461,7 +486,12 @@ void handleExitButton() {
 void handleSessionTimer() {
   if (!sessionActive) return;
 
-  // Semak dengan app sama ada staff sudah submit (setiap 5 saat)
+  if (millis() - lastInUseLcd > 1000) {
+    lastInUseLcd = millis();
+    showInUseScreen();
+  }
+
+  // Sesi tamat pada ESP hanya bila app sudah SUBMIT (session jadi null)
   if (millis() - lastPoll > POLL_SESSION_MS) {
     lastPoll = millis();
     String resp;
@@ -471,6 +501,7 @@ void handleSessionTimer() {
       if (deserializeJson(doc, resp) == DeserializationError::Ok) {
         if (doc["session"].isNull()) {
           sessionActive = false;
+          sessionStaffName = "";
           stopSiren();
           showIdleScreen();
           return;
@@ -482,7 +513,7 @@ void handleSessionTimer() {
   if (millis() > sessionDeadline && !alarmOn) {
     alarmOn = true;
     startSiren();
-    lcdMsg("SILA SUBMIT", "dalam app!");
+    showInUseScreen();
   }
 }
 

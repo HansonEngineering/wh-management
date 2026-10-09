@@ -21,12 +21,15 @@ export async function POST(req: Request) {
     const open = sessions.find((s) => s.status === "open" || s.status === "submitted");
     if (!open) return NextResponse.json({ ok: true, message: "Tiada sesi aktif." });
 
+    // Pintu tutup HANYA direkod. Sesi kekal "open" sehingga staff SUBMIT dalam app.
+    // (Anchor error = submit dalam 5 minit, bukan status pintu.)
     if (closed) {
-      await updateRow(SHEETS.STOR_SESSIONS, open.id, {
-        status: "closed",
+      const patch: Record<string, string> = {
         door_closed_at: nowISO(),
         updated_at: nowISO(),
-      });
+      };
+      if (open.status === "submitted") patch.status = "closed";
+      await updateRow(SHEETS.STOR_SESSIONS, open.id, patch);
     }
     return NextResponse.json({ ok: true });
   } catch (e) {
